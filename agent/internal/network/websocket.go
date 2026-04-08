@@ -702,41 +702,48 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				p.MaxCPUPercent, p.MaxRAMMb, p.MaxBandwidthMbps)
 		}
 
-	// ── Network Transit: activate lightweight proxy ───────────────────────────
+	// ── Network Transit: activate Nexus-Shield gateway VM (T10.2) ───────────────
 	case "activate_transit":
 		go func() {
 			bwMbps := msg.Port // reuse Port field for bandwidth in Mbps (0 = unlimited)
 			if bwMbps <= 0 {
 				bwMbps = 100
 			}
-			log.Printf("[transit] Activating network transit proxy (bandwidth=%d Mbps)", bwMbps)
-			// Start an nginx reverse proxy container as the transit sandbox.
-			// The container runs in bridge mode and accepts connections on port 80/443.
-			// Rate-limiting is enforced at the kernel level via tc-netem if available.
-			dockerArgs := []string{
-				"run", "-d", "--rm",
-				"--name", "nexus-transit-proxy",
-				"-p", "8880:80",
-				"-p", "8843:443",
-				"--memory", "64m",
-				"--cpus", "0.25",
-				"nginx:alpine",
+			upstream := msg.TargetURL
+			if upstream == "" {
+				upstream = "127.0.0.1:3000"
 			}
-			cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("[transit] Failed to start proxy container: %v — %s", err, string(out))
-			} else {
-				log.Printf("[transit] Proxy container started (nexus-transit-proxy)")
+			if err := agentvm.StartGatewayVM(agentvm.GatewayConfig{
+				UpstreamAddr:  upstream,
+				BandwidthMbps: bwMbps,
+				ExternalPort:  8080,
+			}); err != nil {
+				log.Printf("[transit] StartGatewayVM error: %v", err)
 			}
 		}()
 
-	// ── Network Transit: deactivate proxy ─────────────────────────────────────
+	// ── Network Transit: deactivate Nexus-Shield ──────────────────────────────
 	case "deactivate_transit":
 		go func() {
-			log.Printf("[transit] Deactivating network transit proxy")
-			cmd := exec.CommandContext(ctx, "docker", "stop", "nexus-transit-proxy")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("[transit] Stop proxy: %v — %s", err, string(out))
+			agentvm.StopGatewayVM()
+		}()
+
+	// ── NAT / public-IP discovery (T10.1) ─────────────────────────────────────
+	case "discover_nat":
+		go func() {
+			ResetDiscovery()
+			res := DiscoverPublicIP()
+			payload, _ := json.Marshal(map[string]any{
+				"type": "nat_discovery",
+				"data": map[string]any{
+					"publicIP":      res.PublicIP,
+					"isPublic":      res.IsPublic,
+					"upnpAvailable": res.UPnPAvailable,
+				},
+			})
+			select {
+			case outCh <- payload:
+			case <-ctx.Done():
 			}
 		}()
 

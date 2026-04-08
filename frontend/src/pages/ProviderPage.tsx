@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Cpu, MemoryStick, HardDrive, Wifi, Clock,
   Server, Loader2, RefreshCw, Save, CheckCircle, AlertCircle,
   TrendingUp, Zap, Award, Network, Activity,
-  ArrowUp, ArrowDown, Eye,
+  ArrowUp, ArrowDown, Eye, Globe, Radio,
 } from 'lucide-react';
 import api from '../services/api';
 import { Card, CardHeader, CardDivider } from '../components/ui/Card';
@@ -73,6 +73,89 @@ function fmt(b:number):string{
   if(b>=1e6)return(b/1e6).toFixed(1)+' MB';
   if(b>=1e3)return(b/1e3).toFixed(1)+' KB';
   return b.toFixed(0)+' B';
+}
+
+/* ── Network history ring buffer ────────────────────────────────── */
+const MAX_SAMPLES = 50;
+function useNetworkHistory(nodeId:string|null):{tx:number;rx:number}[]{
+  const t=useNodeTelemetry(nodeId);
+  const buf=useRef<{tx:number;rx:number}[]>([]);
+  const[,forceRender]=useState(0);
+  useEffect(()=>{
+    if(!t)return;
+    buf.current=[...buf.current.slice(-(MAX_SAMPLES-1)),{tx:t.netTxSec,rx:t.netRxSec}];
+    forceRender(n=>n+1);
+  },[t]);
+  return buf.current;
+}
+
+/* ── PulseChart ─────────────────────────────────────────────────── */
+function PulseChart({nodeId,height=56}:{nodeId:string;height?:number}){
+  const history=useNetworkHistory(nodeId);
+  const W=300,H=height;
+
+  if(history.length<2){
+    return(
+      <div style={{height:H}} className="flex items-center justify-center">
+        <div className="flex items-center gap-2 text-[12px] text-text-muted">
+          <Radio className="w-3.5 h-3.5 animate-pulse text-success"/>
+          Aguardando pacotes…
+        </div>
+      </div>
+    );
+  }
+
+  const combined=history.map(p=>p.tx+p.rx);
+  const maxVal=Math.max(...combined,1024);
+
+  const txPts=history.map((p,i)=>{
+    const x=(i/(history.length-1))*W;
+    const y=H-(p.tx/maxVal)*(H-6)-3;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const rxPts=history.map((p,i)=>{
+    const x=(i/(history.length-1))*W;
+    const y=H-(p.rx/maxVal)*(H-6)-3;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const txPath=`M ${txPts.join(' L ')}`;
+  const rxPath=`M ${rxPts.join(' L ')}`;
+  const lastTx=history[history.length-1].tx;
+  const lastRx=history[history.length-1].rx;
+  const lastTxY=H-(lastTx/maxVal)*(H-6)-3;
+  const lastRxY=H-(lastRx/maxVal)*(H-6)-3;
+
+  return(
+    <div className="relative">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:H}} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="tx-grad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="#22c55e" stopOpacity="0.4"/>
+            <stop offset="100%" stopColor="#22c55e" stopOpacity="0.9"/>
+          </linearGradient>
+          <linearGradient id="rx-grad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.4"/>
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.9"/>
+          </linearGradient>
+          <filter id="glow-g"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <filter id="glow-b"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        {/* TX line */}
+        <path d={`${txPath} L ${W},${H} L 0,${H} Z`} fill="url(#tx-grad)" fillOpacity="0.06"/>
+        <path d={txPath} stroke="url(#tx-grad)" strokeWidth="1.5" fill="none" filter="url(#glow-g)"/>
+        <circle cx={W} cy={lastTxY} r="3" fill="#22c55e" opacity="0.9"/>
+        {/* RX line */}
+        <path d={`${rxPath} L ${W},${H} L 0,${H} Z`} fill="url(#rx-grad)" fillOpacity="0.06"/>
+        <path d={rxPath} stroke="url(#rx-grad)" strokeWidth="1.5" fill="none" filter="url(#glow-b)" strokeDasharray="none"/>
+        <circle cx={W} cy={lastRxY} r="3" fill="#6366f1" opacity="0.9"/>
+      </svg>
+      {/* Legend */}
+      <div className="absolute top-1 right-1 flex items-center gap-2 text-[10px] text-text-muted">
+        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-success inline-block rounded"/>TX {fmt(lastTx)}/s</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-accent inline-block rounded"/>RX {fmt(lastRx)}/s</span>
+      </div>
+    </div>
+  );
 }
 
 const DEFAULT_POLICY:NodePolicy={
@@ -310,15 +393,95 @@ function NodePolicyPanel({node,surgeMultiplier,onSaved}:{node:ProviderNode;surge
           )}
 
           <CardDivider/>
-          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">Network Transit</p>
-          <Toggle value={policy.offerNetworkTransit} onChange={set('offerNetworkTransit') as (v:boolean)=>void}
-            label="Emprestar largura de banda à rede"
-            description="Quando saturação >70%, este nó vira gateway. Ganhe $0.045/GB trafegado sem custo de infraestrutura."/>
-          {policy.offerNetworkTransit&&(
-            <PolicySlider label="Banda para trânsito" icon={<Network className="w-3.5 h-3.5"/>}
-              value={policy.transitBandwidthMbps} min={10} max={10000} step={10} unit=" Mbps"
-              onChange={set('transitBandwidthMbps') as (v:number)=>void}/>
-          )}
+          {/* ── Network Transit (Apple-style) ──────────────────────── */}
+          <div className="rounded-2xl border border-white/[0.08] overflow-hidden bg-white/[0.02]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 pt-4 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${policy.offerNetworkTransit?'bg-success/15':'bg-white/[0.06]'}`}>
+                  <Globe className={`w-4 h-4 ${policy.offerNetworkTransit?'text-success':'text-text-muted'}`}/>
+                </div>
+                <div>
+                  <p className="text-[13px] font-semibold text-text-primary leading-tight">Nexus Flow</p>
+                  <p className="text-[11px] text-text-muted leading-tight">Emprestar banda à rede</p>
+                </div>
+              </div>
+              <button onClick={()=>(set('offerNetworkTransit') as (v:boolean)=>void)(!policy.offerNetworkTransit)}
+                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors duration-200 ${policy.offerNetworkTransit?'bg-success':'bg-white/[0.12]'}`}>
+                <div className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${policy.offerNetworkTransit?'translate-x-5':'translate-x-0'}`}/>
+              </button>
+            </div>
+
+            {policy.offerNetworkTransit&&(
+              <div className="px-4 pb-4 space-y-3 border-t border-white/[0.06] pt-3">
+                {/* Pulse Activity Chart */}
+                <div>
+                  <p className="text-[11px] font-medium text-text-muted mb-2 flex items-center gap-1.5">
+                    <Activity className="w-3 h-3 text-success"/>Atividade de rede em tempo real
+                  </p>
+                  <div className="rounded-xl bg-black/20 border border-white/[0.05] p-2">
+                    <PulseChart nodeId={node.id}/>
+                  </div>
+                </div>
+
+                {/* Bandwidth slider */}
+                <PolicySlider label="Reservar para Nexus Flow" icon={<Network className="w-3.5 h-3.5"/>}
+                  value={policy.transitBandwidthMbps} min={10} max={10000} step={10} unit=" Mbps"
+                  onChange={set('transitBandwidthMbps') as (v:number)=>void}/>
+
+                {/* Earnings preview per GB */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-3 rounded-xl bg-success/5 border border-success/20">
+                    <p className="text-[10px] text-text-muted mb-1 flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3 text-success"/>Previsão / GB trafegado
+                    </p>
+                    <p className="text-[18px] font-bold text-success leading-none">
+                      ${(BASE.netGbTransit*getRegional(node.country)*surgeMultiplier).toFixed(3)}
+                    </p>
+                    <p className="text-[10px] text-text-muted mt-1">por GB · {node.country??'Global'}</p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+                    <p className="text-[10px] text-text-muted mb-1 flex items-center gap-1">
+                      <Wifi className="w-3 h-3"/>Pico de banda
+                    </p>
+                    <p className="text-[18px] font-bold text-text-primary leading-none">
+                      {policy.transitBandwidthMbps<1000?`${policy.transitBandwidthMbps}M`:`${(policy.transitBandwidthMbps/1000).toFixed(1)}G`}bps
+                    </p>
+                    <p className="text-[10px] text-text-muted mt-1">limite reservado</p>
+                  </div>
+                </div>
+
+                {/* Status when STREAMING */}
+                {node.transitStatus==='STREAMING'&&(
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-success/10 border border-success/20">
+                    <Radio className="w-3.5 h-3.5 text-success animate-pulse"/>
+                    <span className="text-[12px] text-success font-medium">Gateway ativo — tráfego fluindo</span>
+                  </div>
+                )}
+                {node.transitStatus==='STANDBY'&&(
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
+                    <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"/>
+                    <span className="text-[12px] text-yellow-400 font-medium">Em standby — pronto para ativar</span>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-text-muted leading-relaxed">
+                  Quando a saturação de rede superar 70%, o scheduler promove este nó a gateway automaticamente.
+                  Nexus-Shield inicia um proxy isolado (64 MB RAM, 0,25 CPU) para segurança total.
+                </p>
+              </div>
+            )}
+
+            {!policy.offerNetworkTransit&&(
+              <div className="px-4 pb-4 border-t border-white/[0.06] pt-3">
+                <p className="text-[12px] text-text-muted leading-relaxed">
+                  Ative para contribuir com largura de banda à rede. Quando saturação &gt;70%, este nó vira
+                  gateway e você ganha <span className="text-success font-semibold">${BASE.netGbTransit.toFixed(3)}/GB</span> trafegado
+                  {surgeMultiplier>1.05&&<span className="text-yellow-400"> × {surgeMultiplier.toFixed(2)} surge</span>}.
+                </p>
+              </div>
+            )}
+          </div>
 
           <CardDivider/>
           <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">Janela de disponibilidade (UTC)</p>

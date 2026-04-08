@@ -290,6 +290,8 @@ model DePINApp {
   customDomain   String?          @unique @map("custom_domain")
   sslStatus      SslStatus?       @map("ssl_status")
   priceMultiplier Float           @default(1.0) @map("price_multiplier")
+  // Surge price locked at deploy time — consumer always pays this, provider gets bonus if surge rises
+  lockedHourlyUsd Float          @default(0) @map("locked_hourly_usd")
   assignments    NodeAssignment[]
   usageRecords   UsageRecord[]
   createdAt      DateTime         @default(now()) @map("created_at")
@@ -316,18 +318,22 @@ model NodeAssignment {
 // ─── Billing / Proof of Computing ────────────────────────────────────────────
 
 model UsageRecord {
-  id          String   @id @default(uuid())
-  appId       String   @map("app_id")
-  app         DePINApp @relation(fields: [appId], references: [id], onDelete: Cascade)
-  nodeId      String   @map("node_id")
-  windowStart DateTime @map("window_start")
-  windowEnd   DateTime @map("window_end")
-  cpuMs       BigInt   @default(0) @map("cpu_ms")
-  ramMbS      BigInt   @default(0) @map("ram_mb_s")
-  netRxBytes  BigInt   @default(0) @map("net_rx_bytes")
-  netTxBytes  BigInt   @default(0) @map("net_tx_bytes")
-  billedUsd   Float    @default(0) @map("billed_usd")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                   String   @id @default(uuid())
+  appId                String   @map("app_id")
+  app                  DePINApp @relation(fields: [appId], references: [id], onDelete: Cascade)
+  nodeId               String   @map("node_id")
+  windowStart          DateTime @map("window_start")
+  windowEnd            DateTime @map("window_end")
+  cpuMs                BigInt   @default(0) @map("cpu_ms")
+  ramMbS               BigInt   @default(0) @map("ram_mb_s")
+  netRxBytes           BigInt   @default(0) @map("net_rx_bytes")
+  netTxBytes           BigInt   @default(0) @map("net_tx_bytes")
+  // T9.3 — separate transit traffic billed at $netGbTransit/GB
+  networkTransitBytes  BigInt   @default(0) @map("network_transit_bytes")
+  billedUsd            Float    @default(0) @map("billed_usd")
+  // Price locked at deploy time (hedge — consumer is never surprised by surge)
+  priceLockedUsd       Float    @default(0) @map("price_locked_usd")
+  createdAt            DateTime @default(now()) @map("created_at")
 
   @@index([appId, windowStart])
   @@index([nodeId, windowStart])

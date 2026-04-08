@@ -10,7 +10,7 @@
  * O cron consolidateDailyUsage() deve ser chamado diariamente às 00:00 UTC.
  */
 import prisma from '../config/database';
-import { computeWindowCost } from './pricing.service';
+import { computeWindowCost, transitEarningsPerGb } from './pricing.service';
 
 const PLATFORM_COMMISSION = 0.20; // 20 % platform fee
 
@@ -190,21 +190,25 @@ export async function consolidateDailyUsage(): Promise<void> {
     const node = await prisma.node.findUnique({ where: { id: nodeId } });
 
     // Aggregate window usage
-    const totalCpuMs      = rows.reduce((s, r) => s + r.cpuMs,      BigInt(0));
-    const totalRamMbS     = rows.reduce((s, r) => s + r.ramMbS,     BigInt(0));
-    const totalNetRxBytes = rows.reduce((s, r) => s + r.netRxBytes, BigInt(0));
-    const totalNetTxBytes = rows.reduce((s, r) => s + r.netTxBytes, BigInt(0));
+    const totalCpuMs              = rows.reduce((s, r) => s + r.cpuMs,                                    BigInt(0));
+    const totalRamMbS             = rows.reduce((s, r) => s + r.ramMbS,                                   BigInt(0));
+    const totalNetRxBytes         = rows.reduce((s, r) => s + r.netRxBytes,                               BigInt(0));
+    const totalNetTxBytes         = rows.reduce((s, r) => s + r.netTxBytes,                               BigInt(0));
+    const totalNetworkTransitBytes = rows.reduce((s, r) => s + ((r as any).networkTransitBytes ?? BigInt(0)), BigInt(0));
 
-    // Use pricing.service for accurate cost (regional + surge)
+    // T9.3 — compute workload cost + transit cost separately
     const cost = computeWindowCost({
-      cpuMs:          totalCpuMs,
-      ramMbS:         totalRamMbS,
-      netRxBytes:     totalNetRxBytes,
-      netTxBytes:     totalNetTxBytes,
-      country:        node?.country,
+      cpuMs:                totalCpuMs,
+      ramMbS:               totalRamMbS,
+      netRxBytes:           totalNetRxBytes,
+      netTxBytes:           totalNetTxBytes,
+      networkTransitBytes:  totalNetworkTransitBytes,
+      country:              node?.country,
       priceMultiplier,
     });
 
+    // T9.2 — provider gets surge bonus: they earn on the surge multiplier even if
+    // the consumer paid the locked (lower) price at deploy time.
     const grossUsd      = cost.totalUsd;
     const providerEarns = grossUsd * (1 - commission);
 
@@ -234,6 +238,56 @@ export async function consolidateDailyUsage(): Promise<void> {
       console.error('[wallet] consolidateDailyUsage: credit error', e);
     }
 
-    console.log(`[wallet] billed app=${appId} node=${nodeId} gross=$${grossUsd.toFixed(6)} providerNet=$${providerEarns.toFixed(6)}`);
+    console.log(
+      `[wallet] billed app=${appId} node=${nodeId}` +
+      ` compute=$${(cost.cpuUsd + cost.ramUsd + cost.gpuUsd).toFixed(6)}` +
+      ` transit=$${cost.transitUsd.toFixed(6)}` +
+      ` gross=$${grossUsd.toFixed(6)} providerNet=$${providerEarns.toFixed(6)}`,
+    );
   }
+}
+
+// ── T9.3 — Immediate transit billing (per-event, not daily) ──────────────────
+
+/**
+ * Called by the transit monitor whenever a node finishes a streaming session.
+ * Bills the consumer for transit bytes and credits the provider immediately
+ * (no waiting for the daily cron) since transit sessions can be short-lived.
+ */
+export async function billTransitSession(opts: {
+  nodeId:        string;
+  consumerId:    string;
+  providerId:    string;
+  transitBytes:  bigint;
+  surgeMultiplier?: number;
+}): Promise<void> {
+  const node = await prisma.node.findUnique({ where: { id: opts.nodeId } });
+  const commission = await getCommission();
+
+  const perGb   = transitEarningsPerGb({ country: node?.country, surge: opts.surgeMultiplier ?? 1.0 });
+  const totalGb = Number(opts.transitBytes) / (1024 ** 3);
+  const grossUsd = totalGb * perGb;
+  if (grossUsd < 0.000001) return; // skip dust
+
+  const providerEarns = grossUsd * (1 - commission);
+
+  await debitConsumer(
+    opts.consumerId,
+    grossUsd,
+    `Nexus Flow transit — node ${opts.nodeId}`,
+    { nodeId: opts.nodeId, transitBytes: opts.transitBytes.toString() },
+  );
+
+  await creditProvider(
+    opts.providerId,
+    providerEarns,
+    `Transit earnings — node ${opts.nodeId}`,
+    { nodeId: opts.nodeId, transitBytes: opts.transitBytes.toString() },
+  );
+
+  console.log(
+    `[wallet] transit billed nodeId=${opts.nodeId}` +
+    ` ${(totalGb * 1024).toFixed(1)} MB gross=$${grossUsd.toFixed(6)}` +
+    ` providerNet=$${providerEarns.toFixed(6)}`,
+  );
 }
