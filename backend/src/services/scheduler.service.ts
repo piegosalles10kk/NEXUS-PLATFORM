@@ -326,6 +326,96 @@ export async function getDemandRatio(region?: string): Promise<number> {
   }
 }
 
+// ── Network Transit Saturation Monitor ───────────────────────────────────────
+
+const TRANSIT_SATURATION_THRESHOLD = 0.70; // 70 % of active-node bandwidth → trigger standby
+
+/**
+ * Checks bandwidth utilisation across active transit nodes.
+ * If saturation ≥ 70 %, activates standby nodes from the transit pool.
+ * Called every 30 s by the monitoring loop.
+ */
+export async function checkTransitSaturation(io?: any): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+
+    // Gather latest netTxSec for each ONLINE node offering transit
+    const transitNodes = await (prisma.node as any).findMany({
+      where: { status: 'ONLINE' },
+      include: { policy: true },
+      select: { id: true, name: true, ipAddress: true, transitStatus: true, policy: true },
+    }) as Array<{ id: string; name: string; ipAddress: string | null; transitStatus: string; policy: any }>;
+
+    let totalCapacityBps = 0;
+    let totalUsedBps     = 0;
+
+    for (const node of transitNodes) {
+      if (!node.policy?.offerNetworkTransit) continue;
+      const capacityBps = (node.policy.transitBandwidthMbps ?? 100) * 1_000_000 / 8;
+      totalCapacityBps += capacityBps;
+
+      // Read latest telemetry from Redis
+      const raw = await redis.lIndex(`node:${node.id}:telemetry`, 0);
+      if (raw) {
+        const t = JSON.parse(raw);
+        totalUsedBps += (t.netTxSec ?? 0) + (t.netRxSec ?? 0);
+      }
+    }
+
+    if (totalCapacityBps === 0) return;
+
+    const saturation = totalUsedBps / totalCapacityBps;
+
+    // Find standby-capable nodes (policy.offerNetworkTransit but transitStatus = IDLE)
+    const standbyPool = transitNodes.filter(
+      n => n.policy?.offerNetworkTransit && n.transitStatus === 'IDLE',
+    );
+
+    if (saturation >= TRANSIT_SATURATION_THRESHOLD && standbyPool.length > 0) {
+      // Promote first standby node to ACTIVE
+      const node = standbyPool[0];
+      await (prisma.node as any).update({
+        where: { id: node.id },
+        data: { transitStatus: 'STREAMING' },
+      });
+
+      // Push activate_transit to the agent
+      const { getAgentSocket } = await import('./agent-ws.service');
+      const ws = getAgentSocket(node.id);
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({
+          action: 'activate_transit',
+          bandwidthMbps: node.policy?.transitBandwidthMbps ?? 100,
+        }));
+      }
+
+      io?.emit('node:transit_activated', { nodeId: node.id, saturation });
+      console.log(`[transit] Promoted node ${node.name} to STREAMING (saturation=${(saturation*100).toFixed(1)}%)`);
+
+    } else if (saturation < TRANSIT_SATURATION_THRESHOLD * 0.50) {
+      // De-activate streaming nodes when saturation drops below 35 %
+      const streamingNodes = transitNodes.filter(n => n.transitStatus === 'STREAMING');
+      for (const node of streamingNodes) {
+        await (prisma.node as any).update({
+          where: { id: node.id },
+          data: { transitStatus: 'STANDBY' },
+        });
+        const { getAgentSocket } = await import('./agent-ws.service');
+        const ws = getAgentSocket(node.id);
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ action: 'deactivate_transit' }));
+        }
+        io?.emit('node:transit_deactivated', { nodeId: node.id });
+      }
+    }
+
+    // Update Redis with current saturation for UI display
+    await redis.set('network:saturation', saturation.toFixed(4), { EX: 60 });
+  } catch (err) {
+    console.error('[transit] saturation check error:', err);
+  }
+}
+
 // ── Daily billing cron ────────────────────────────────────────────────────────
 
 /**

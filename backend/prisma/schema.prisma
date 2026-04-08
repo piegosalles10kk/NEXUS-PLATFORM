@@ -217,26 +217,28 @@ enum NodeStatus {
 }
 
 model Node {
-  id            String           @id @default(uuid())
-  name          String
-  os            String
-  arch          String
-  token         String           @unique
-  status        NodeStatus       @default(OFFLINE)
-  version       String           @default("v1.0.0")
-  ipAddress     String?          @map("ip_address")
-  country       String?          // ISO-3166-1 alpha-2, e.g. "BR"
-  state         String?
-  city          String?
+  id             String           @id @default(uuid())
+  name           String
+  os             String
+  arch           String
+  token          String           @unique
+  status         NodeStatus       @default(OFFLINE)
+  version        String           @default("v1.0.0")
+  ipAddress      String?          @map("ip_address")
+  country        String?          // ISO-3166-1 alpha-2, e.g. "BR"
+  state          String?
+  city           String?
   // GPU hardware capability (null = CPU-only node)
-  gpuModel      String?          @map("gpu_model")
-  gpuMemoryMb   Int?             @map("gpu_memory_mb")
-  gpuCount      Int              @default(0) @map("gpu_count")
-  lastPing      DateTime         @updatedAt @map("last_ping")
-  createdAt     DateTime         @default(now()) @map("created_at")
-  projects      Project[]
-  assignments   NodeAssignment[]
-  policy        NodePolicy?
+  gpuModel       String?          @map("gpu_model")
+  gpuMemoryMb    Int?             @map("gpu_memory_mb")
+  gpuCount       Int              @default(0) @map("gpu_count")
+  // Network transit status: IDLE | STANDBY | STREAMING
+  transitStatus  String           @default("IDLE") @map("transit_status")
+  lastPing       DateTime         @updatedAt @map("last_ping")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  projects       Project[]
+  assignments    NodeAssignment[]
+  policy         NodePolicy?
 
   @@map("nodes")
 }
@@ -393,18 +395,20 @@ model PayoutRequest {
 // ─── Node Policy (Hardware Leash — Sprint 4) ──────────────────────────────────
 
 model NodePolicy {
-  id                 String   @id @default(uuid())
-  nodeId             String   @unique @map("node_id")
-  node               Node     @relation(fields: [nodeId], references: [id], onDelete: Cascade)
-  maxCpuPercent      Float    @default(80) @map("max_cpu_percent")
-  maxRamMb           Int      @default(2048) @map("max_ram_mb")
-  maxDiskGb          Int      @default(20) @map("max_disk_gb")
-  maxBandwidthMbps   Int      @default(100) @map("max_bandwidth_mbps")
-  scheduleStart      String?  @map("schedule_start")  // "08:00" UTC
-  scheduleEnd        String?  @map("schedule_end")    // "22:00" UTC
-  offerGpu           Boolean  @default(false) @map("offer_gpu")
-  maxGpuPercent      Float    @default(100) @map("max_gpu_percent")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                    String   @id @default(uuid())
+  nodeId                String   @unique @map("node_id")
+  node                  Node     @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  maxCpuPercent         Float    @default(80)  @map("max_cpu_percent")
+  maxRamMb              Int      @default(2048) @map("max_ram_mb")
+  maxDiskGb             Int      @default(20)  @map("max_disk_gb")
+  maxBandwidthMbps      Int      @default(100) @map("max_bandwidth_mbps")
+  scheduleStart         String?  @map("schedule_start")      // "08:00" UTC
+  scheduleEnd           String?  @map("schedule_end")        // "22:00" UTC
+  offerGpu              Boolean  @default(false) @map("offer_gpu")
+  maxGpuPercent         Float    @default(100)  @map("max_gpu_percent")
+  offerNetworkTransit   Boolean  @default(false) @map("offer_network_transit")
+  transitBandwidthMbps  Int      @default(100)  @map("transit_bandwidth_mbps")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@map("node_policies")
 }

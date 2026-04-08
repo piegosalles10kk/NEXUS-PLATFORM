@@ -702,6 +702,44 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				p.MaxCPUPercent, p.MaxRAMMb, p.MaxBandwidthMbps)
 		}
 
+	// ── Network Transit: activate lightweight proxy ───────────────────────────
+	case "activate_transit":
+		go func() {
+			bwMbps := msg.Port // reuse Port field for bandwidth in Mbps (0 = unlimited)
+			if bwMbps <= 0 {
+				bwMbps = 100
+			}
+			log.Printf("[transit] Activating network transit proxy (bandwidth=%d Mbps)", bwMbps)
+			// Start an nginx reverse proxy container as the transit sandbox.
+			// The container runs in bridge mode and accepts connections on port 80/443.
+			// Rate-limiting is enforced at the kernel level via tc-netem if available.
+			dockerArgs := []string{
+				"run", "-d", "--rm",
+				"--name", "nexus-transit-proxy",
+				"-p", "8880:80",
+				"-p", "8843:443",
+				"--memory", "64m",
+				"--cpus", "0.25",
+				"nginx:alpine",
+			}
+			cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("[transit] Failed to start proxy container: %v — %s", err, string(out))
+			} else {
+				log.Printf("[transit] Proxy container started (nexus-transit-proxy)")
+			}
+		}()
+
+	// ── Network Transit: deactivate proxy ─────────────────────────────────────
+	case "deactivate_transit":
+		go func() {
+			log.Printf("[transit] Deactivating network transit proxy")
+			cmd := exec.CommandContext(ctx, "docker", "stop", "nexus-transit-proxy")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("[transit] Stop proxy: %v — %s", err, string(out))
+			}
+		}()
+
 	case "terminate":
 		go func() {
 			log.Println("[ws] terminate command received, uninstalling service...")

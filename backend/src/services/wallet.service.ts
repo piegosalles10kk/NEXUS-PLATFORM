@@ -10,29 +10,16 @@
  * O cron consolidateDailyUsage() deve ser chamado diariamente às 00:00 UTC.
  */
 import prisma from '../config/database';
+import { computeWindowCost } from './pricing.service';
 
-// ── Preços base (USD) ─────────────────────────────────────────────────────────
-const BASE_PRICES = {
-  cpuPerMs:          0.00000001,
-  ramPerMbS:         0.00000002,
-  egressPerByte:     0.000000001,
-  platformCommission: 0.20,
-};
+const PLATFORM_COMMISSION = 0.20; // 20 % platform fee
 
-async function getPrices() {
+async function getCommission(): Promise<number> {
   try {
-    const rows = await prisma.systemSetting.findMany({
-      where: { key: { in: ['cpu_price_per_ms', 'ram_price_per_mb_s', 'egress_price_per_byte', 'platform_commission'] } },
-    });
-    const m = Object.fromEntries(rows.map((r: any) => [r.key, parseFloat(r.value)]));
-    return {
-      cpuPerMs:          m['cpu_price_per_ms']       ?? BASE_PRICES.cpuPerMs,
-      ramPerMbS:         m['ram_price_per_mb_s']     ?? BASE_PRICES.ramPerMbS,
-      egressPerByte:     m['egress_price_per_byte']  ?? BASE_PRICES.egressPerByte,
-      platformCommission: m['platform_commission']   ?? BASE_PRICES.platformCommission,
-    };
+    const row = await prisma.systemSetting.findUnique({ where: { key: 'platform_commission' } });
+    return row ? parseFloat(row.value) : PLATFORM_COMMISSION;
   } catch {
-    return BASE_PRICES;
+    return PLATFORM_COMMISSION;
   }
 }
 
@@ -168,7 +155,7 @@ export async function consolidateDailyUsage(): Promise<void> {
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
-  const prices = await getPrices();
+  const commission = await getCommission();
 
   // Fetch all unbilled usage records from yesterday
   const records = await prisma.usageRecord.findMany({
@@ -178,9 +165,7 @@ export async function consolidateDailyUsage(): Promise<void> {
       billedUsd:   0,
     },
     include: {
-      app: {
-        select: { id: true, name: true, priceMultiplier: true },
-      },
+      app: { select: { id: true, name: true, priceMultiplier: true } },
     },
   });
 
@@ -201,15 +186,27 @@ export async function consolidateDailyUsage(): Promise<void> {
     const [appId, nodeId] = key.split('::');
     const priceMultiplier = rows[0].app?.priceMultiplier ?? 1.0;
 
-    const cpuMs      = rows.reduce((s, r) => s + Number(r.cpuMs),      0);
-    const ramMbS     = rows.reduce((s, r) => s + Number(r.ramMbS),     0);
-    const netTxBytes = rows.reduce((s, r) => s + Number(r.netTxBytes), 0);
+    // Fetch node for country (regional pricing)
+    const node = await prisma.node.findUnique({ where: { id: nodeId } });
 
-    const grossUsd =
-      (cpuMs * prices.cpuPerMs + ramMbS * prices.ramPerMbS + netTxBytes * prices.egressPerByte)
-      * priceMultiplier;
+    // Aggregate window usage
+    const totalCpuMs      = rows.reduce((s, r) => s + r.cpuMs,      BigInt(0));
+    const totalRamMbS     = rows.reduce((s, r) => s + r.ramMbS,     BigInt(0));
+    const totalNetRxBytes = rows.reduce((s, r) => s + r.netRxBytes, BigInt(0));
+    const totalNetTxBytes = rows.reduce((s, r) => s + r.netTxBytes, BigInt(0));
 
-    const providerEarns = grossUsd * (1 - prices.platformCommission);
+    // Use pricing.service for accurate cost (regional + surge)
+    const cost = computeWindowCost({
+      cpuMs:          totalCpuMs,
+      ramMbS:         totalRamMbS,
+      netRxBytes:     totalNetRxBytes,
+      netTxBytes:     totalNetTxBytes,
+      country:        node?.country,
+      priceMultiplier,
+    });
+
+    const grossUsd      = cost.totalUsd;
+    const providerEarns = grossUsd * (1 - commission);
 
     // Mark records as billed
     await prisma.usageRecord.updateMany({
@@ -217,8 +214,6 @@ export async function consolidateDailyUsage(): Promise<void> {
       data: { billedUsd: grossUsd / rows.length },
     });
 
-    // Find node owner to credit
-    const node = await prisma.node.findUnique({ where: { id: nodeId } });
     if (!node) continue;
 
     // Find provider user by node token claim (node token encodes userId as subject)

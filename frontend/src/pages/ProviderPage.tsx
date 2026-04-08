@@ -2,756 +2,498 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Cpu, MemoryStick, HardDrive, Wifi, Clock,
   Server, Loader2, RefreshCw, Save, CheckCircle, AlertCircle,
-  TrendingUp, Zap, Award, Activity, ChevronRight,
-  ArrowUp, ArrowDown,
+  TrendingUp, Zap, Award, Network, Activity,
+  ArrowUp, ArrowDown, Eye,
 } from 'lucide-react';
 import api from '../services/api';
-import { getSocket, connectSocket } from '../services/socket';
 import { Card, CardHeader, CardDivider } from '../components/ui/Card';
+import { useNodeTelemetry } from '../hooks/useNodeTelemetry';
 
 /* ── Types ─────────────────────────────────────────────────────── */
-interface GPUInfo {
-  name: string;
-  memory_total_mb: number;
-  memory_used_mb?: number;
-  utilization_percent?: number;
-  driver_version?: string;
-}
-
-interface DiskInfo {
-  device: string;
-  mountpoint: string;
-  fstype: string;
-  total: number;   // bytes
-  used: number;    // bytes
-  free: number;    // bytes
-  used_percent: number;
-}
-
 interface NodePolicy {
-  maxCpuPercent:    number;
-  maxRamMb:         number;
-  maxDiskGb:        number;
-  maxBandwidthMbps: number;
-  scheduleStart:    string;
-  scheduleEnd:      string;
-  offerGpu:         boolean;
-  maxGpuPercent:    number;
+  maxCpuPercent:        number;
+  maxRamMb:             number;
+  maxDiskGb:            number;
+  maxBandwidthMbps:     number;
+  scheduleStart:        string;
+  scheduleEnd:          string;
+  offerGpu:             boolean;
+  maxGpuPercent:        number;
+  offerNetworkTransit:  boolean;
+  transitBandwidthMbps: number;
 }
 
 interface ProviderNode {
-  id: string;
-  name: string;
-  status: string;
-  country?: string;
-  city?: string;
-  ipAddress?: string;
-  gpuModel?: string;
-  gpuMemoryMb?: number;
-  gpuCount?: number;
-  policy?: NodePolicy | null;
-  _count?: { assignments: number };
+  id:            string;
+  name:          string;
+  status:        string;
+  country?:      string;
+  city?:         string;
+  ipAddress?:    string;
+  gpuModel?:     string | null;
+  gpuMemoryMb?:  number | null;
+  gpuCount:      number;
+  transitStatus: string;
+  policy?:       NodePolicy | null;
+  _count?:       { assignments: number };
 }
 
-interface TelemetryPayload {
-  timestamp:  number;
-  cpuUsage:   number;
-  cpuCores?:  number;
-  ramUsage:   number;
-  ramTotal:   number;
-  ramUsed:    number;
-  diskUsage:  number;
-  diskTotal:  number;
-  diskUsed:   number;
-  disks?:     DiskInfo[];
-  netTxSec:   number;
-  netRxSec:   number;
-  topProcs?:  { pid: number; name: string; cpu: number; ram: number }[];
-  gpus?:      GPUInfo[];
-}
+/* ── Regional multipliers (mirror of pricing.service.ts) ────────── */
+const REGIONAL: Record<string, number> = {
+  US:1.00,CA:1.03,BR:0.90,AR:0.85,MX:0.88,GB:1.08,DE:1.07,FR:1.07,
+  NL:1.06,IE:1.05,SE:1.06,JP:1.18,KR:1.15,SG:1.12,AU:1.14,IN:0.82,ZA:0.88,
+};
+const BASE = { cpuPerHour:0.048, ramGbPerHour:0.006, gpuPerHour:0.263, netGbTransit:0.045 };
 
-/** Hardware capabilities derived from first telemetry snapshot */
-interface HardwareCaps {
-  ramTotalMb:   number; // actual RAM
-  diskTotalGb:  number; // sum of all physical disks
-  cpuCores:     number;
-}
+function getRegional(c?: string|null) { return REGIONAL[(c??'').toUpperCase()]??1.0; }
 
-/* ── Helpers ──────────────────────────────────────────────────── */
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB/s`;
-  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB/s`;
-  if (b >= 1e3) return `${(b / 1e3).toFixed(1)} KB/s`;
-  return `${b} B/s`;
-}
-
-function fmtMb(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
-}
-
-function capsFromTelemetry(t: TelemetryPayload): HardwareCaps {
-  const ramTotalMb = Math.ceil(t.ramTotal / 1024 / 1024);
-  const disks = t.disks ?? [];
-  const diskTotalGb = disks.length > 0
-    ? Math.ceil(disks.reduce((s, d) => s + d.total, 0) / 1024 / 1024 / 1024)
-    : Math.ceil(t.diskTotal / 1024 / 1024 / 1024);
-  return {
-    ramTotalMb: Math.max(ramTotalMb, 256),
-    diskTotalGb: Math.max(diskTotalGb, 1),
-    cpuCores: t.cpuCores ?? 1,
-  };
+function estimateMonthly(p: NodePolicy, country: string|undefined, surge: number): number {
+  const m = getRegional(country)*surge, H=24*30, U=0.60;
+  const cpu = (p.maxCpuPercent/100)*BASE.cpuPerHour*m*H*U;
+  const ram = (p.maxRamMb/1024)*BASE.ramGbPerHour*m*H*U;
+  const gpu = p.offerGpu?(p.maxGpuPercent/100)*BASE.gpuPerHour*m*H*U:0;
+  const net = p.offerNetworkTransit?(p.transitBandwidthMbps/8/1024)*3600*H*U*BASE.netGbTransit*m:0;
+  return cpu+ram+gpu+net;
 }
 
 /* ── Power Rank ─────────────────────────────────────────────────── */
-interface RankInfo {
-  rank: 'Bronze' | 'Silver' | 'Gold' | 'Platinum';
-  color: string; bg: string; border: string; score: number;
+interface RankInfo{rank:string;color:string;bg:string;border:string;score:number}
+function getPowerRank(p:NodePolicy, hasGpu:boolean):RankInfo{
+  const score=(p.maxCpuPercent/100)*40+(p.maxRamMb/32768)*25+(p.maxBandwidthMbps/10000)*15
+    +(hasGpu&&p.offerGpu?(p.maxGpuPercent/100)*15:0)
+    +(p.offerNetworkTransit?(p.transitBandwidthMbps/10000)*5:0);
+  if(score>=70)return{rank:'Platinum',color:'text-[#b8c7ff]',bg:'bg-[#b8c7ff]/10',border:'border-[#b8c7ff]/30',score};
+  if(score>=45)return{rank:'Gold',    color:'text-[#ffd700]',bg:'bg-[#ffd700]/10',border:'border-[#ffd700]/30',score};
+  if(score>=22)return{rank:'Silver',  color:'text-[#c8d0e0]',bg:'bg-[#c8d0e0]/10',border:'border-[#c8d0e0]/30',score};
+  return           {rank:'Bronze',  color:'text-[#cd9f6a]',bg:'bg-[#cd9f6a]/10',border:'border-[#cd9f6a]/30',score};
 }
 
-function getPowerRank(p: NodePolicy, hasGpu: boolean): RankInfo {
-  const gpuBonus = hasGpu && p.offerGpu ? 15 : 0;
-  const score =
-    (p.maxCpuPercent / 100) * 45 +
-    (p.maxRamMb / 32768) * 25 +
-    (p.maxBandwidthMbps / 10000) * 15 +
-    gpuBonus;
-  if (score >= 75) return { rank: 'Platinum', color: 'text-[#b8c7ff]', bg: 'bg-[#b8c7ff]/10', border: 'border-[#b8c7ff]/30', score };
-  if (score >= 50) return { rank: 'Gold',     color: 'text-[#ffd700]', bg: 'bg-[#ffd700]/10', border: 'border-[#ffd700]/30', score };
-  if (score >= 25) return { rank: 'Silver',   color: 'text-[#c8d0e0]', bg: 'bg-[#c8d0e0]/10', border: 'border-[#c8d0e0]/30', score };
-  return              { rank: 'Bronze',   color: 'text-[#cd9f6a]', bg: 'bg-[#cd9f6a]/10', border: 'border-[#cd9f6a]/30', score };
+function fmt(b:number):string{
+  if(b>=1e9)return(b/1e9).toFixed(1)+' GB';
+  if(b>=1e6)return(b/1e6).toFixed(1)+' MB';
+  if(b>=1e3)return(b/1e3).toFixed(1)+' KB';
+  return b.toFixed(0)+' B';
 }
 
-function calcMonthlyEarnings(p: NodePolicy, surge: number, hasGpu: boolean): number {
-  const gpuBonus = hasGpu && p.offerGpu ? 0.80 : 0;
-  const hourlyBase =
-    (p.maxCpuPercent / 100) * 0.50 +
-    (p.maxRamMb / 32768) * 0.30 +
-    (p.maxBandwidthMbps / 10000) * 0.20 +
-    gpuBonus;
-  const powerScore =
-    (p.maxCpuPercent / 100) * 45 +
-    (p.maxRamMb / 32768) * 25 +
-    (p.maxBandwidthMbps / 10000) * 15 +
-    (hasGpu && p.offerGpu ? 15 : 0);
-  const powerFactor = 0.5 + (powerScore / 100) * 0.5;
-  return hourlyBase * surge * powerFactor * 24 * 30;
-}
+const DEFAULT_POLICY:NodePolicy={
+  maxCpuPercent:80,maxRamMb:2048,maxDiskGb:20,maxBandwidthMbps:100,
+  scheduleStart:'00:00',scheduleEnd:'23:59',
+  offerGpu:false,maxGpuPercent:100,
+  offerNetworkTransit:false,transitBandwidthMbps:100,
+};
 
-/* ── Gauge ───────────────────────────────────────────────────────── */
-function Gauge({ value, label, color = '#6366f1', icon }: {
-  value: number; label: string; color?: string; icon: React.ReactNode;
-}) {
-  const r = 26;
-  const circ = 2 * Math.PI * r;
-  const dash = (Math.min(100, Math.max(0, value)) / 100) * circ;
-  return (
-    <div className="flex flex-col items-center gap-1.5">
-      <div className="relative w-16 h-16">
-        <svg viewBox="0 0 60 60" className="w-full h-full -rotate-90">
-          <circle cx="30" cy="30" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
-          <circle cx="30" cy="30" r={r} fill="none" stroke={color} strokeWidth="5" strokeLinecap="round"
-            strokeDasharray={`${dash} ${circ - dash}`}
-            style={{ transition: 'stroke-dasharray 0.4s ease' }}
-          />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center text-white/60">{icon}</div>
-      </div>
-      <p className="text-[15px] font-bold text-text-primary leading-none">{value.toFixed(0)}%</p>
-      <p className="text-[11px] text-text-muted">{label}</p>
+/* ── MiniBar ────────────────────────────────────────────────────── */
+function MiniBar({pct,color='bg-accent'}:{pct:number;color?:string}){
+  return(
+    <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+      <div className={`h-full rounded-full ${color} transition-all duration-700`} style={{width:`${Math.min(pct,100)}%`}}/>
     </div>
   );
 }
 
-/* ── MiniBar ─────────────────────────────────────────────────────── */
-function MiniBar({ value, color = 'bg-accent' }: { value: number; color?: string }) {
-  return (
-    <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
-      <div className={`h-full ${color} rounded-full transition-all duration-300`} style={{ width: `${Math.min(100, value)}%` }} />
-    </div>
-  );
-}
-
-/* ── Live Telemetry Panel ────────────────────────────────────────── */
-function LiveTelemetryPanel({ nodeId, onHardwareCaps }: {
-  nodeId: string;
-  onHardwareCaps: (caps: HardwareCaps) => void;
-}) {
-  const [live, setLive] = useState<TelemetryPayload | null>(null);
-  const [connected, setConnected] = useState(false);
-  const reportedCaps = useState(false);
-
-  useEffect(() => {
-    const socket = getSocket();
-    connectSocket();
-
-    const handler = (data: { nodeId: string; data: TelemetryPayload }) => {
-      if (data.nodeId !== nodeId) return;
-      setLive(data.data);
-      // Report hardware caps once per node selection
-      if (!reportedCaps[0]) {
-        reportedCaps[1](true);
-        onHardwareCaps(capsFromTelemetry(data.data));
-      }
-    };
-
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('node:telemetry', handler);
-    if (socket.connected) setConnected(true);
-
-    return () => { socket.off('node:telemetry', handler); };
-  }, [nodeId]);
-
-  if (!live) {
-    return (
-      <div className="flex flex-col items-center justify-center py-10 gap-3 text-text-muted">
-        <Activity className="w-8 h-8 animate-pulse" />
-        <p className="text-[13px]">
-          {connected ? 'Aguardando dados de telemetria…' : 'Conectando ao WebSocket…'}
-        </p>
-      </div>
-    );
-  }
-
-  const gpus  = live.gpus ?? [];
-  const disks = live.disks ?? [];
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <p className="text-[12px] font-semibold text-text-secondary uppercase tracking-wider">Live Stats</p>
-        <div className="flex items-center gap-1.5 text-[11px] text-success">
-          <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-          Ao vivo
-        </div>
-      </div>
-
-      {/* Gauges */}
-      <div className="grid grid-cols-4 gap-2">
-        <Gauge value={live.cpuUsage}  label={`CPU${live.cpuCores ? ` ×${live.cpuCores}` : ''}`} icon={<Cpu className="w-4 h-4" />}          color="#6366f1" />
-        <Gauge value={live.ramUsage}  label="RAM"                                                  icon={<MemoryStick className="w-4 h-4" />}  color="#22d3ee" />
-        <Gauge value={live.diskUsage} label="Disco"                                                icon={<HardDrive className="w-4 h-4" />}    color="#f59e0b" />
-        <Gauge value={gpus.length > 0 ? (gpus[0].utilization_percent ?? 0) : 0} label="GPU"
-          icon={<Zap className="w-4 h-4" />} color={gpus.length > 0 ? '#a855f7' : '#374151'} />
-      </div>
-
-      {/* RAM + Network */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-2">
-          <div className="flex items-center justify-between text-[12px]">
-            <span className="text-text-muted flex items-center gap-1"><MemoryStick className="w-3 h-3" /> RAM</span>
-            <span className="text-text-primary font-semibold">
-              {fmtMb(live.ramUsed / 1024 / 1024)} / {fmtMb(live.ramTotal / 1024 / 1024)}
-            </span>
-          </div>
-          <MiniBar value={live.ramUsage} color="bg-cyan-400" />
-        </div>
-        <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1">
-          <p className="text-[12px] text-text-muted flex items-center gap-1"><Wifi className="w-3 h-3" /> Rede</p>
-          <div className="flex items-center gap-2 text-[12px]">
-            <ArrowUp className="w-3 h-3 text-emerald-400" />
-            <span className="text-text-primary font-semibold">{fmtBytes(live.netTxSec)}</span>
-          </div>
-          <div className="flex items-center gap-2 text-[12px]">
-            <ArrowDown className="w-3 h-3 text-blue-400" />
-            <span className="text-text-primary font-semibold">{fmtBytes(live.netRxSec)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* All Disks */}
-      {disks.length > 0 ? (
-        <div className="space-y-2">
-          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-            Discos ({disks.length})
-          </p>
-          {disks.map((d, i) => (
-            <div key={i} className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1.5">
-              <div className="flex items-center justify-between text-[12px]">
-                <div className="flex items-center gap-1.5 text-text-secondary">
-                  <HardDrive className="w-3 h-3 shrink-0 text-amber-400" />
-                  <span className="font-mono truncate max-w-[120px]">{d.mountpoint}</span>
-                  <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded bg-white/[0.06]">{d.fstype}</span>
-                </div>
-                <span className="text-text-primary font-semibold shrink-0">
-                  {fmtMb(d.used / 1024 / 1024)} / {fmtMb(d.total / 1024 / 1024)}
-                </span>
-              </div>
-              <MiniBar value={d.used_percent} color={d.used_percent > 90 ? 'bg-red-400' : d.used_percent > 70 ? 'bg-amber-400' : 'bg-amber-500'} />
-              <div className="flex justify-between text-[10px] text-text-muted">
-                <span className="text-emerald-400">Livre: {fmtMb(d.free / 1024 / 1024)}</span>
-                <span>{d.used_percent.toFixed(1)}% usado</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        /* Fallback single disk */
-        <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1.5">
-          <div className="flex items-center justify-between text-[12px]">
-            <span className="text-text-muted flex items-center gap-1"><HardDrive className="w-3 h-3" /> Disco</span>
-            <span className="text-text-primary font-semibold">
-              {fmtMb(live.diskUsed / 1024 / 1024)} / {fmtMb(live.diskTotal / 1024 / 1024)}
-            </span>
-          </div>
-          <MiniBar value={live.diskUsage} color="bg-amber-400" />
-        </div>
-      )}
-
-      {/* GPU */}
-      {gpus.length > 0 && (
-        <div className="p-3 rounded-xl bg-purple-500/5 border border-purple-500/20 space-y-2">
-          <p className="text-[12px] font-semibold text-purple-300 flex items-center gap-1.5">
-            <Zap className="w-3.5 h-3.5" /> GPU Detectada
-          </p>
-          {gpus.map((gpu, i) => (
-            <div key={i} className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-text-secondary truncate max-w-[160px]">{gpu.name}</span>
-                <span className="text-purple-300 font-semibold">{gpu.utilization_percent?.toFixed(0) ?? 0}%</span>
-              </div>
-              <MiniBar value={gpu.utilization_percent ?? 0} color="bg-purple-400" />
-              <div className="flex justify-between text-[10px] text-text-muted">
-                <span>VRAM: {fmtMb(gpu.memory_used_mb ?? 0)} / {fmtMb(gpu.memory_total_mb)}</span>
-                {gpu.driver_version && <span>Driver {gpu.driver_version}</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Top processes */}
-      {(live.topProcs ?? []).length > 0 && (
-        <div className="space-y-1">
-          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Top Processos</p>
-          {(live.topProcs ?? []).slice(0, 5).map(p => (
-            <div key={p.pid} className="flex items-center justify-between text-[12px] py-1 border-b border-white/[0.04]">
-              <span className="text-text-secondary truncate max-w-[140px]">{p.name}</span>
-              <div className="flex gap-3 text-text-muted">
-                <span className="text-accent font-mono">{p.cpu.toFixed(1)}% cpu</span>
-                <span className="text-cyan-400 font-mono">{p.ram.toFixed(1)}% ram</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── PolicySlider ────────────────────────────────────────────────── */
-function PolicySlider({
-  label, icon, value, min, max, step, unit, onChange, disabled = false,
-}: {
-  label: string; icon: React.ReactNode; value: number;
-  min: number; max: number; step: number; unit: string;
-  onChange: (v: number) => void; disabled?: boolean;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const pct = ((value - min) / (max - min)) * 100;
-  return (
-    <div className={`p-4 rounded-xl bg-white/[0.04] border border-white/[0.06] transition-all ${disabled ? 'opacity-40 pointer-events-none' : 'hover:border-white/10'}`}>
+/* ── PolicySlider ───────────────────────────────────────────────── */
+function PolicySlider({label,icon,value,min,max,step,unit,onChange}:{
+  label:string;icon:React.ReactNode;value:number;min:number;max:number;step:number;unit:string;onChange:(v:number)=>void;
+}){
+  const[dragging,setDragging]=useState(false);
+  const pct=((value-min)/(max-min))*100;
+  return(
+    <div className="p-4 rounded-xl bg-white/[0.04] backdrop-blur-md border border-white/[0.06] hover:border-white/10 transition-colors">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-[13px] text-text-secondary">
           <span className="text-text-muted">{icon}</span>{label}
         </div>
-        <span className={`font-bold transition-all duration-150 ${dragging ? 'text-[16px] text-accent scale-110' : 'text-[13px] text-text-primary'}`}>
+        <span className={`font-bold transition-all duration-150 ${dragging?'text-[17px] text-accent':'text-[13px] text-text-primary'}`}>
           {value}{unit}
         </span>
       </div>
-      <input
-        type="range" min={min} max={max} step={step} value={value}
-        onMouseDown={() => setDragging(true)} onMouseUp={() => setDragging(false)}
-        onTouchStart={() => setDragging(true)} onTouchEnd={() => setDragging(false)}
-        onBlur={() => setDragging(false)}
-        onChange={e => onChange(Number(e.target.value))}
-        style={{ '--pct': `${pct}%` } as React.CSSProperties}
+      <input type="range" min={min} max={max} step={step} value={value}
+        onMouseDown={()=>setDragging(true)} onMouseUp={()=>setDragging(false)}
+        onTouchStart={()=>setDragging(true)} onTouchEnd={()=>setDragging(false)}
+        onChange={e=>onChange(Number(e.target.value))}
+        style={{'--pct':`${pct}%`} as React.CSSProperties}
         className="w-full h-2 rounded-full appearance-none cursor-pointer
           [background:linear-gradient(to_right,#6366f1_var(--pct),rgba(255,255,255,0.08)_var(--pct))]
           [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
-          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-lg
+          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
+          [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-pointer
           [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full
           [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border-0"
       />
-      <div className="flex justify-between text-[11px] text-text-muted mt-2">
-        <span>{min}{unit}</span>
-        <span className="text-text-muted/60">{Math.round(pct)}% do máx</span>
-        <span>{max}{unit}</span>
+      <div className="flex justify-between text-[11px] text-text-muted mt-1.5">
+        <span>{min}{unit}</span><span>{Math.round(pct)}%</span><span>{max}{unit}</span>
       </div>
     </div>
   );
 }
 
-/* ── GPU Toggle ─────────────────────────────────────────────────── */
-function GpuToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="p-4 rounded-xl bg-purple-500/5 border border-purple-500/20 flex items-center justify-between">
-      <div className="flex items-center gap-2.5">
-        <div className={`p-2 rounded-lg ${enabled ? 'bg-purple-500/20' : 'bg-white/[0.04]'} transition-colors`}>
-          <Zap className={`w-4 h-4 ${enabled ? 'text-purple-400' : 'text-text-muted'}`} />
-        </div>
-        <div>
-          <p className="text-[13px] font-semibold text-text-primary">Oferecer GPU</p>
-          <p className="text-[11px] text-text-muted">+$0.80/h · bônus de rank</p>
-        </div>
+/* ── Toggle ─────────────────────────────────────────────────────── */
+function Toggle({value,onChange,label,description}:{value:boolean;onChange:(v:boolean)=>void;label:string;description?:string;}){
+  return(
+    <div className="flex items-start justify-between gap-4 p-4 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+      <div>
+        <p className="text-[13px] font-semibold text-text-primary">{label}</p>
+        {description&&<p className="text-[12px] text-text-muted mt-0.5">{description}</p>}
       </div>
-      <button
-        onClick={() => onChange(!enabled)}
-        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${enabled ? 'bg-purple-500' : 'bg-white/10'}`}
-      >
-        <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+      <button onClick={()=>onChange(!value)}
+        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${value?'bg-accent':'bg-white/[0.12]'}`}>
+        <div className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${value?'translate-x-5':'translate-x-0'}`}/>
       </button>
     </div>
   );
 }
 
-const DEFAULT_POLICY: NodePolicy = {
-  maxCpuPercent: 80, maxRamMb: 2048, maxDiskGb: 20,
-  maxBandwidthMbps: 100, scheduleStart: '00:00', scheduleEnd: '23:59',
-  offerGpu: false, maxGpuPercent: 100,
-};
+/* ── Live Telemetry Panel ───────────────────────────────────────── */
+function TelemetryPanel({nodeId}:{nodeId:string}){
+  const t=useNodeTelemetry(nodeId);
+  if(!t) return(
+    <div className="flex items-center gap-2 text-[13px] text-text-muted py-8 justify-center">
+      <Activity className="w-4 h-4 animate-pulse"/>Aguardando telemetria…
+    </div>
+  );
+  return(
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] text-text-muted flex items-center gap-1"><Cpu className="w-3 h-3"/>CPU</span>
+            <span className="text-[13px] font-bold text-text-primary">{t.cpuUsage.toFixed(1)}%</span>
+          </div>
+          <MiniBar pct={t.cpuUsage} color={t.cpuUsage>80?'bg-danger':t.cpuUsage>60?'bg-warning':'bg-success'}/>
+          <p className="text-[11px] text-text-muted mt-1">{t.cpuCores} cores</p>
+        </div>
+        <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] text-text-muted flex items-center gap-1"><MemoryStick className="w-3 h-3"/>RAM</span>
+            <span className="text-[13px] font-bold text-text-primary">{t.ramUsage.toFixed(1)}%</span>
+          </div>
+          <MiniBar pct={t.ramUsage} color={t.ramUsage>85?'bg-danger':t.ramUsage>65?'bg-warning':'bg-accent'}/>
+          <p className="text-[11px] text-text-muted mt-1">{fmt(t.ramUsed)} / {fmt(t.ramTotal)}</p>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+        <p className="text-[12px] text-text-muted mb-2 flex items-center gap-1"><Wifi className="w-3 h-3"/>Rede</p>
+        <div className="flex items-center gap-6">
+          <span className="flex items-center gap-1 text-[13px]"><ArrowUp className="w-3 h-3 text-success"/>{fmt(t.netTxSec)}/s</span>
+          <span className="flex items-center gap-1 text-[13px]"><ArrowDown className="w-3 h-3 text-info"/>{fmt(t.netRxSec)}/s</span>
+        </div>
+      </div>
+
+      {(t.disks?.length>0?t.disks:[]).map((d,i)=>(
+        <div key={i} className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] text-text-muted flex items-center gap-1"><HardDrive className="w-3 h-3"/>{d.mountpoint}</span>
+            <span className="text-[13px] font-bold text-text-primary">{d.used_percent.toFixed(1)}%</span>
+          </div>
+          <MiniBar pct={d.used_percent} color={d.used_percent>90?'bg-danger':d.used_percent>70?'bg-warning':'bg-accent'}/>
+          <p className="text-[11px] text-text-muted mt-1">{fmt(d.used)} / {fmt(d.total)}</p>
+        </div>
+      ))}
+
+      {(t.gpus?.length>0?t.gpus:[]).map((g,i)=>(
+        <div key={i} className="p-3 rounded-xl bg-[#6366f1]/10 border border-[#6366f1]/20">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] text-text-muted flex items-center gap-1"><Eye className="w-3 h-3 text-[#a5b4fc]"/>GPU {g.index} — {g.name}</span>
+            <span className="text-[13px] font-bold text-[#a5b4fc]">{g.utilization_percent}%</span>
+          </div>
+          <MiniBar pct={g.utilization_percent} color="bg-[#6366f1]"/>
+          <p className="text-[11px] text-text-muted mt-1">
+            VRAM {g.memory_used_mb} / {g.memory_total_mb} MB{g.driver_version&&` · Driver ${g.driver_version}`}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ── NodePolicyPanel ────────────────────────────────────────────── */
-function NodePolicyPanel({ node, surgeMultiplier, onSaved }: {
-  node: ProviderNode; surgeMultiplier: number; onSaved: () => void;
-}) {
-  const [policy, setPolicy]     = useState<NodePolicy>(node.policy ?? DEFAULT_POLICY);
-  const [saving, setSaving]     = useState(false);
-  const [saved, setSaved]       = useState(false);
-  const [error, setError]       = useState('');
-  const [tab, setTab]           = useState<'config' | 'telemetry'>('config');
-  const [caps, setCaps]         = useState<HardwareCaps | null>(null);
-  const [loadingCaps, setLoadingCaps] = useState(true);
+function NodePolicyPanel({node,surgeMultiplier,onSaved}:{node:ProviderNode;surgeMultiplier:number;onSaved:()=>void;}){
+  const[policy,setPolicy]=useState<NodePolicy>(node.policy??DEFAULT_POLICY);
+  const[saving,setSaving]=useState(false);
+  const[saved,setSaved]=useState(false);
+  const[error,setError]=useState('');
+  const[tab,setTab]=useState<'limits'|'telemetry'>('limits');
 
-  /* Fetch historical telemetry for hardware caps on node select */
-  useEffect(() => {
-    setPolicy(node.policy ?? DEFAULT_POLICY);
-    setCaps(null);
-    setLoadingCaps(true);
+  useEffect(()=>{setPolicy(node.policy??DEFAULT_POLICY);},[node.id]);
 
-    api.get(`/v1/agent/nodes/${node.id}/telemetry`).then(res => {
-      const history: TelemetryPayload[] = res.data?.data?.telemetry ?? [];
-      if (history.length > 0) {
-        const latest = history[history.length - 1];
-        setCaps(capsFromTelemetry(latest));
-      }
-    }).catch(() => {}).finally(() => setLoadingCaps(false));
-  }, [node.id]);
+  const set=(key:keyof NodePolicy)=>(v:number|string|boolean)=>setPolicy(p=>({...p,[key]:v}));
+  const hasGpu=node.gpuCount>0;
+  const rank=getPowerRank(policy,hasGpu);
+  const monthly=estimateMonthly(policy,node.country,surgeMultiplier);
 
-  /* Also update caps when live telemetry arrives */
-  const handleLiveCaps = useCallback((liveCaps: HardwareCaps) => {
-    setCaps(liveCaps);
-  }, []);
-
-  const set = (key: keyof NodePolicy) => (v: number | string | boolean) =>
-    setPolicy(p => ({ ...p, [key]: v }));
-
-  const hasGpu  = (node.gpuCount ?? 0) > 0;
-  const rank    = getPowerRank(policy, hasGpu);
-  const monthly = calcMonthlyEarnings(policy, surgeMultiplier, hasGpu);
-
-  // Dynamic slider maximums — use real hardware if known, else safe defaults
-  const maxRam  = caps ? caps.ramTotalMb  : 32768;
-  const maxDisk = caps ? caps.diskTotalGb : 500;
-
-  // Snap policy value to actual hardware if it exceeds
-  useEffect(() => {
-    if (!caps) return;
-    setPolicy(p => ({
-      ...p,
-      maxRamMb:  Math.min(p.maxRamMb,  caps.ramTotalMb),
-      maxDiskGb: Math.min(p.maxDiskGb, caps.diskTotalGb),
-    }));
-  }, [caps]);
-
-  const handleSave = async () => {
-    setSaving(true); setError('');
-    try {
-      await api.put(`/v1/agent/nodes/${node.id}/policy`, policy);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-      onSaved();
-    } catch (err: any) {
-      setError(err.response?.data?.message ?? 'Erro ao salvar.');
-    } finally { setSaving(false); }
+  const handleSave=async()=>{
+    setSaving(true);setError('');
+    try{
+      await api.put(`/v1/agent/nodes/${node.id}/policy`,policy);
+      setSaved(true);setTimeout(()=>setSaved(false),2500);onSaved();
+    }catch(err:any){setError(err.response?.data?.message??'Erro ao salvar.');}
+    finally{setSaving(false);}
   };
 
-  return (
+  return(
     <div className="space-y-4">
       {/* Earnings + Rank */}
       <div className="grid grid-cols-2 gap-3">
         <div className="p-4 rounded-xl bg-success/5 border border-success/20">
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
-            <TrendingUp className="w-3.5 h-3.5 text-success" /> Previsão mensal
+            <TrendingUp className="w-3.5 h-3.5 text-success"/>Previsão mensal
           </div>
           <p className="text-[22px] font-bold text-success leading-none">${monthly.toFixed(2)}</p>
-          {surgeMultiplier > 1 && (
+          {surgeMultiplier>1.05&&(
             <p className="text-[11px] text-text-muted mt-1 flex items-center gap-1">
-              <Zap className="w-3 h-3 text-yellow-400" /> surge {surgeMultiplier.toFixed(1)}×
+              <Zap className="w-3 h-3 text-yellow-400"/>surge {surgeMultiplier.toFixed(2)}×
             </p>
           )}
-          {hasGpu && policy.offerGpu && (
-            <p className="text-[11px] text-purple-400 mt-0.5 flex items-center gap-1">
-              <Zap className="w-3 h-3" /> +GPU boost
-            </p>
-          )}
+          <p className="text-[10px] text-text-muted mt-1.5">~60% utilização estimada · 50% abaixo da AWS</p>
         </div>
         <div className={`p-4 rounded-xl border ${rank.bg} ${rank.border}`}>
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
-            <Award className="w-3.5 h-3.5" /> Power Rank
+            <Award className="w-3.5 h-3.5"/>Power Rank
           </div>
           <p className={`text-[22px] font-bold leading-none ${rank.color}`}>{rank.rank}</p>
           <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
-            <div className={`h-full rounded-full transition-all duration-500 ${rank.color.replace('text-', 'bg-')}`}
-              style={{ width: `${Math.min(rank.score, 100)}%` }} />
+            <div className={`h-full rounded-full transition-all duration-500 ${rank.color.replace('text-','bg-')}`}
+              style={{width:`${Math.min(rank.score,100)}%`}}/>
           </div>
-          <p className="text-[11px] text-text-muted mt-1">{rank.score.toFixed(0)} pts</p>
+          <p className="text-[10px] text-text-muted mt-1.5">{rank.score.toFixed(0)}/100 pts</p>
         </div>
       </div>
 
-      {/* GPU hardware badge */}
-      {hasGpu && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-[12px]">
-          <Zap className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            <span className="font-semibold">{node.gpuModel ?? 'GPU detectada'}</span>
-            {' '}· {node.gpuCount} GPU{(node.gpuCount ?? 0) > 1 ? 's' : ''}
-            {' '}· {fmtMb(node.gpuMemoryMb ?? 0)} VRAM total
-          </span>
-        </div>
-      )}
-
-      {/* Hardware caps loading indicator */}
-      {loadingCaps && (
-        <div className="flex items-center gap-2 text-[12px] text-text-muted">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          Carregando especificações reais do hardware…
-        </div>
-      )}
-      {caps && (
-        <div className="flex flex-wrap gap-2">
-          {[
-            { label: `${caps.cpuCores} vCPU`, icon: <Cpu className="w-3 h-3" /> },
-            { label: fmtMb(caps.ramTotalMb),  icon: <MemoryStick className="w-3 h-3" /> },
-            { label: `${caps.diskTotalGb} GB disco`,  icon: <HardDrive className="w-3 h-3" /> },
-          ].map(({ label, icon }) => (
-            <span key={label} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-text-muted bg-white/[0.06] border border-white/[0.08]">
-              {icon}{label}
-            </span>
-          ))}
-        </div>
-      )}
-
       {/* Tabs */}
-      <div className="flex gap-1 p-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
-        {(['config', 'telemetry'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex-1 py-1.5 rounded-md text-[12px] font-semibold transition-all ${tab === t ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary'}`}>
-            {t === 'config' ? '⚙️ Configuração' : '📡 Telemetria Live'}
+      <div className="flex gap-1 p-1 bg-white/[0.04] rounded-xl">
+        {(['limits','telemetry'] as const).map(t=>(
+          <button key={t} onClick={()=>setTab(t)}
+            className={`flex-1 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${tab===t?'bg-white/[0.08] text-text-primary':'text-text-muted hover:text-text-secondary'}`}>
+            {t==='limits'?'⚙ Limites':'📡 Telemetria ao vivo'}
           </button>
         ))}
       </div>
 
-      {error && (
-        <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-danger/10 border border-danger/20 text-danger text-sm">
-          <AlertCircle className="w-4 h-4 shrink-0" />{error}
-        </div>
-      )}
-
-      {tab === 'config' ? (
-        <>
-          <GpuToggle enabled={policy.offerGpu} onChange={set('offerGpu') as (v: boolean) => void} />
-
-          {policy.offerGpu && hasGpu && (
-            <PolicySlider label="Uso máximo de GPU" icon={<Zap className="w-3.5 h-3.5" />}
-              value={policy.maxGpuPercent} min={10} max={100} step={5} unit="%"
-              onChange={set('maxGpuPercent') as (v: number) => void} />
-          )}
-          {!hasGpu && policy.offerGpu && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-[12px]">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              Nenhuma GPU detectada neste nó ainda.
+      {tab==='telemetry'?(
+        <TelemetryPanel nodeId={node.id}/>
+      ):(
+        <div className="space-y-3">
+          {error&&(
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-danger/10 border border-danger/20 text-danger text-sm">
+              <AlertCircle className="w-4 h-4 shrink-0"/>{error}
             </div>
           )}
 
-          <CardDivider />
-
-          <PolicySlider label="CPU máxima" icon={<Cpu className="w-3.5 h-3.5" />}
+          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">Computação</p>
+          <PolicySlider label="CPU máxima" icon={<Cpu className="w-3.5 h-3.5"/>}
             value={policy.maxCpuPercent} min={10} max={100} step={5} unit="%"
-            onChange={set('maxCpuPercent') as (v: number) => void} />
+            onChange={set('maxCpuPercent') as (v:number)=>void}/>
+          <PolicySlider label="RAM máxima" icon={<MemoryStick className="w-3.5 h-3.5"/>}
+            value={policy.maxRamMb} min={256} max={32768} step={256} unit=" MB"
+            onChange={set('maxRamMb') as (v:number)=>void}/>
+          <PolicySlider label="Disco máximo" icon={<HardDrive className="w-3.5 h-3.5"/>}
+            value={policy.maxDiskGb} min={1} max={500} step={1} unit=" GB"
+            onChange={set('maxDiskGb') as (v:number)=>void}/>
 
-          <PolicySlider label={`RAM máxima${caps ? ` (de ${fmtMb(caps.ramTotalMb)})` : ''}`}
-            icon={<MemoryStick className="w-3.5 h-3.5" />}
-            value={Math.min(policy.maxRamMb, maxRam)}
-            min={256} max={maxRam} step={256} unit=" MB"
-            onChange={set('maxRamMb') as (v: number) => void} />
+          {hasGpu&&(
+            <>
+              <CardDivider/>
+              <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">
+                GPU — {node.gpuModel??'Detectada'} ({node.gpuCount}×)
+                {node.gpuMemoryMb&&<span className="normal-case font-normal"> · {node.gpuMemoryMb} MB VRAM</span>}
+              </p>
+              <Toggle value={policy.offerGpu} onChange={set('offerGpu') as (v:boolean)=>void}
+                label="Disponibilizar GPU para workloads"
+                description={`Ganhe $${BASE.gpuPerHour.toFixed(3)}/h por GPU disponível (${node.gpuCount} GPU × surge × regional)`}/>
+              {policy.offerGpu&&(
+                <PolicySlider label="GPU máxima" icon={<Eye className="w-3.5 h-3.5"/>}
+                  value={policy.maxGpuPercent} min={10} max={100} step={5} unit="%"
+                  onChange={set('maxGpuPercent') as (v:number)=>void}/>
+              )}
+            </>
+          )}
 
-          <PolicySlider label={`Disco máximo${caps ? ` (de ${caps.diskTotalGb} GB)` : ''}`}
-            icon={<HardDrive className="w-3.5 h-3.5" />}
-            value={Math.min(policy.maxDiskGb, maxDisk)}
-            min={1} max={maxDisk} step={1} unit=" GB"
-            onChange={set('maxDiskGb') as (v: number) => void} />
+          <CardDivider/>
+          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">Network Transit</p>
+          <Toggle value={policy.offerNetworkTransit} onChange={set('offerNetworkTransit') as (v:boolean)=>void}
+            label="Emprestar largura de banda à rede"
+            description="Quando saturação >70%, este nó vira gateway. Ganhe $0.045/GB trafegado sem custo de infraestrutura."/>
+          {policy.offerNetworkTransit&&(
+            <PolicySlider label="Banda para trânsito" icon={<Network className="w-3.5 h-3.5"/>}
+              value={policy.transitBandwidthMbps} min={10} max={10000} step={10} unit=" Mbps"
+              onChange={set('transitBandwidthMbps') as (v:number)=>void}/>
+          )}
 
-          <PolicySlider label="Banda máxima" icon={<Wifi className="w-3.5 h-3.5" />}
-            value={policy.maxBandwidthMbps} min={1} max={10000} step={1} unit=" Mbps"
-            onChange={set('maxBandwidthMbps') as (v: number) => void} />
-
-          <CardDivider />
-
+          <CardDivider/>
+          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-widest">Janela de disponibilidade (UTC)</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="flex items-center gap-1 text-[12px] font-medium text-text-secondary mb-1.5">
-                <Clock className="w-3.5 h-3.5" />Início (UTC)
+                <Clock className="w-3.5 h-3.5"/>Início
               </label>
               <input type="time" value={policy.scheduleStart}
-                onChange={e => setPolicy(p => ({ ...p, scheduleStart: e.target.value }))}
-                className="input-field" />
+                onChange={e=>setPolicy(p=>({...p,scheduleStart:e.target.value}))} className="input-field"/>
             </div>
             <div>
               <label className="flex items-center gap-1 text-[12px] font-medium text-text-secondary mb-1.5">
-                <Clock className="w-3.5 h-3.5" />Fim (UTC)
+                <Clock className="w-3.5 h-3.5"/>Fim
               </label>
               <input type="time" value={policy.scheduleEnd}
-                onChange={e => setPolicy(p => ({ ...p, scheduleEnd: e.target.value }))}
-                className="input-field" />
+                onChange={e=>setPolicy(p=>({...p,scheduleEnd:e.target.value}))} className="input-field"/>
             </div>
           </div>
 
           <button onClick={handleSave} disabled={saving}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent hover:bg-accent-light disabled:opacity-50 text-white text-sm font-semibold transition-colors">
-            {saved    ? <><CheckCircle className="w-4 h-4" />Salvo!</>
-            : saving  ? <><Loader2 className="w-4 h-4 animate-spin" />Salvando…</>
-            :            <><Save className="w-4 h-4" />Salvar limites</>}
+            {saved  ?<><CheckCircle className="w-4 h-4"/>Salvo — push enviado ao agente</>
+             :saving?<><Loader2 className="w-4 h-4 animate-spin"/>Salvando…</>
+             :       <><Save className="w-4 h-4"/>Salvar limites</>}
           </button>
-        </>
-      ) : (
-        <LiveTelemetryPanel nodeId={node.id} onHardwareCaps={handleLiveCaps} />
+        </div>
       )}
     </div>
   );
 }
 
-/* ── PowerRankBadge ──────────────────────────────────────────────── */
-function PowerRankBadge({ policy, gpuCount }: { policy?: NodePolicy | null; gpuCount?: number }) {
-  if (!policy) return null;
-  const { rank, color, bg, border } = getPowerRank(policy, (gpuCount ?? 0) > 0);
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border ${bg} ${border} ${color}`}>
-      <Award className="w-3 h-3" />{rank}
-    </span>
+/* ── Mini card badges ───────────────────────────────────────────── */
+function PowerRankBadge({policy,hasGpu}:{policy?:NodePolicy|null;hasGpu:boolean}){
+  if(!policy)return null;
+  const{rank,color,bg,border}=getPowerRank(policy,hasGpu);
+  return<span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border ${bg} ${border} ${color}`}><Award className="w-3 h-3"/>{rank}</span>;
+}
+function TransitBadge({status}:{status:string}){
+  if(!status||status==='IDLE')return null;
+  const map:Record<string,string>={STANDBY:'badge badge-warning',STREAMING:'badge badge-success'};
+  return<span className={map[status]??'badge badge-neutral'}>{status}</span>;
+}
+function LiveCardBars({nodeId,status}:{nodeId:string;status:string}){
+  const t=useNodeTelemetry(status==='ONLINE'?nodeId:null);
+  if(!t)return null;
+  return(
+    <div className="mt-2 space-y-1">
+      <div className="flex items-center gap-2 text-[11px] text-text-muted">
+        <span className="w-6">CPU</span>
+        <div className="flex-1"><MiniBar pct={t.cpuUsage} color={t.cpuUsage>80?'bg-danger':'bg-accent'}/></div>
+        <span className="w-8 text-right">{t.cpuUsage.toFixed(0)}%</span>
+      </div>
+      <div className="flex items-center gap-2 text-[11px] text-text-muted">
+        <span className="w-6">RAM</span>
+        <div className="flex-1"><MiniBar pct={t.ramUsage} color={t.ramUsage>85?'bg-danger':'bg-accent'}/></div>
+        <span className="w-8 text-right">{t.ramUsage.toFixed(0)}%</span>
+      </div>
+      {t.gpus?.length>0&&(
+        <div className="flex items-center gap-2 text-[11px] text-[#a5b4fc]">
+          <span className="w-6">GPU</span>
+          <div className="flex-1"><MiniBar pct={t.gpus[0].utilization_percent} color="bg-[#6366f1]"/></div>
+          <span className="w-8 text-right">{t.gpus[0].utilization_percent}%</span>
+        </div>
+      )}
+    </div>
   );
 }
 
-/* ── Page ──────────────────────────────────────────────────────────── */
-export default function ProviderPage() {
-  const [nodes, setNodes]           = useState<ProviderNode[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [selected, setSelected]     = useState<string | null>(null);
-  const [surgeMultiplier, setSurge] = useState(1.0);
+/* ── Page ──────────────────────────────────────────────────────── */
+export default function ProviderPage(){
+  const[nodes,setNodes]=useState<ProviderNode[]>([]);
+  const[loading,setLoading]=useState(true);
+  const[selected,setSelected]=useState<string|null>(null);
+  const[surge,setSurge]=useState(1.0);
 
-  const load = useCallback(async () => {
+  const load=useCallback(async()=>{
     setLoading(true);
-    try {
-      const [nodesRes, demandRes] = await Promise.allSettled([
-        api.get('/v1/agent/nodes'),
-        api.get('/depin/demand'),
-      ]);
-      if (nodesRes.status === 'fulfilled') setNodes(nodesRes.value.data.data.nodes);
-      if (demandRes.status === 'fulfilled') {
-        const ratio = demandRes.value.data.data.demandRatio as number;
-        setSurge(Math.min(Math.max(1 + (ratio - 1) * 0.5, 1), 3));
+    try{
+      const[nr,dr]=await Promise.allSettled([api.get('/v1/agent/nodes'),api.get('/depin/demand')]);
+      if(nr.status==='fulfilled') setNodes(nr.value.data.data.nodes??[]);
+      if(dr.status==='fulfilled'){
+        const r=dr.value.data.data.demandRatio as number;
+        setSurge(Math.min(Math.max(1+(r-1)*0.5,1),3));
       }
-    } catch { setNodes([]); }
-    finally { setLoading(false); }
-  }, []);
+    }catch{setNodes([]);}
+    finally{setLoading(false);}
+  },[]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(()=>{load();},[load]);
 
-  const selectedNode = nodes.find(n => n.id === selected) ?? null;
+  const selectedNode=nodes.find(n=>n.id===selected)??null;
 
-  return (
+  return(
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Server className="w-5 h-5 text-accent-light" />
+            <Server className="w-5 h-5 text-accent-light"/>
             <h1 className="text-2xl font-bold text-text-primary">Provedor de Hardware</h1>
           </div>
           <p className="text-[13px] text-text-secondary">
-            Configure os limites dos seus nós e veja a telemetria em tempo real.
+            Dados reais dos seus nós. Configure limites, disponibilize GPU e largura de banda.
           </p>
         </div>
-        <button onClick={load} className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-white/[0.04] transition-colors">
-          <RefreshCw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {surge>1.05&&(
+            <span className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-yellow-400/10 border border-yellow-400/20 text-yellow-400 text-[12px] font-semibold">
+              <Zap className="w-3.5 h-3.5"/>Surge {surge.toFixed(2)}×
+            </span>
+          )}
+          <button onClick={load} className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-white/[0.04] transition-colors">
+            <RefreshCw className="w-4 h-4"/>
+          </button>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-6 h-6 text-accent animate-spin" />
-        </div>
-      ) : nodes.length === 0 ? (
+      {loading?(
+        <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 text-accent animate-spin"/></div>
+      ):nodes.length===0?(
         <Card className="text-center py-20" padding="none">
-          <Server className="w-10 h-10 text-text-muted mx-auto mb-4" />
+          <Server className="w-10 h-10 text-text-muted mx-auto mb-4"/>
           <p className="text-[14px] font-semibold text-text-primary mb-1">Nenhum nó registrado</p>
-          <p className="text-[13px] text-text-secondary">Registre um nó em Cloud → Agentes para começar.</p>
+          <p className="text-[13px] text-text-secondary">Registre um nó em Cloud → Agentes para começar a ganhar.</p>
         </Card>
-      ) : (
+      ):(
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Node list */}
           <div className="space-y-2">
-            {nodes.map(node => (
-              <Card key={node.id} hoverable onClick={() => setSelected(node.id)}
-                className={`transition-all ${selected === node.id ? 'border-accent/40 bg-accent/5' : ''}`}
-                padding="md">
+            {nodes.map(node=>(
+              <Card key={node.id} hoverable onClick={()=>setSelected(node.id)}
+                className={`transition-all ${selected===node.id?'border-accent/40 bg-accent/5':''}`} padding="md">
                 <div className="flex items-start gap-3">
-                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${node.status === 'ONLINE' ? 'bg-success animate-pulse-status' : 'bg-text-muted'}`} />
+                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${node.status==='ONLINE'?'bg-success animate-pulse-status':'bg-text-muted'}`}/>
                   <div className="flex-1 min-w-0">
                     <p className="text-[14px] font-semibold text-text-primary truncate">{node.name}</p>
-                    <p className="text-[12px] text-text-muted">{node.city ?? node.country ?? 'Local desconhecido'}</p>
-                    <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <span className={`badge ${node.status === 'ONLINE' ? 'badge-success' : 'badge-neutral'}`}>{node.status}</span>
-                      <PowerRankBadge policy={node.policy} gpuCount={node.gpuCount} />
-                      {(node.gpuCount ?? 0) > 0 && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-purple-500/10 border-purple-500/30 text-purple-300">
-                          <Zap className="w-3 h-3" />{node.gpuCount} GPU
+                    <p className="text-[12px] text-text-muted">{node.city??node.country??'Local desconhecido'}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      <span className={`badge ${node.status==='ONLINE'?'badge-success':'badge-neutral'}`}>{node.status}</span>
+                      <PowerRankBadge policy={node.policy} hasGpu={node.gpuCount>0}/>
+                      <TransitBadge status={node.transitStatus}/>
+                    </div>
+                    <LiveCardBars nodeId={node.id} status={node.status}/>
+                    <div className="mt-2 flex items-center gap-3 text-[12px] text-text-muted">
+                      <span className="flex items-center gap-1">
+                        <TrendingUp className="w-3.5 h-3.5 text-success"/>
+                        {node._count?.assignments??0} app{(node._count?.assignments??0)!==1?'s':''}
+                      </span>
+                      {node.gpuCount>0&&(
+                        <span className="flex items-center gap-1 text-[#a5b4fc]">
+                          <Eye className="w-3 h-3"/>GPU {node.gpuCount}×
                         </span>
                       )}
                     </div>
-                    <div className="mt-2 flex items-center gap-1 text-[12px] text-text-muted">
-                      <TrendingUp className="w-3.5 h-3.5 text-success" />
-                      {node._count?.assignments ?? 0} assignment{(node._count?.assignments ?? 0) !== 1 ? 's' : ''} ativo{(node._count?.assignments ?? 0) !== 1 ? 's' : ''}
-                    </div>
-                    {node.gpuModel && (
-                      <p className="mt-1 flex items-center gap-1 text-[11px] text-purple-400">
-                        <Zap className="w-3 h-3" />{node.gpuModel}
-                      </p>
-                    )}
                   </div>
-                  <ChevronRight className={`w-4 h-4 text-text-muted mt-4 transition-transform ${selected === node.id ? 'rotate-90' : ''}`} />
                 </div>
               </Card>
             ))}
           </div>
 
-          {/* Policy editor */}
           <div className="lg:col-span-2">
-            {selectedNode ? (
+            {selectedNode?(
               <Card>
                 <CardHeader
-                  title={selectedNode.name}
-                  description={`${selectedNode.ipAddress ?? 'IP não disponível'} · ${selectedNode.city ?? ''} ${selectedNode.country ?? ''}`}
-                  icon={<Server className="w-4 h-4" />}
+                  title={`Limites — ${selectedNode.name}`}
+                  description={`${selectedNode.ipAddress??'IP desconhecido'} · ${selectedNode.country??'Região desconhecida'}`}
+                  icon={<Cpu className="w-4 h-4"/>}
                 />
-                <CardDivider />
-                <NodePolicyPanel node={selectedNode} surgeMultiplier={surgeMultiplier} onSaved={load} />
+                <CardDivider/>
+                <NodePolicyPanel node={selectedNode} surgeMultiplier={surge} onSaved={load}/>
               </Card>
-            ) : (
+            ):(
               <Card className="flex items-center justify-center h-full min-h-[320px] text-center" padding="none">
                 <div>
-                  <Server className="w-8 h-8 text-text-muted mx-auto mb-3" />
-                  <p className="text-[13px] text-text-secondary">Selecione um nó para configurar e monitorar.</p>
+                  <Server className="w-8 h-8 text-text-muted mx-auto mb-3"/>
+                  <p className="text-[13px] text-text-secondary">Selecione um nó para configurar seus limites.</p>
                 </div>
               </Card>
             )}
