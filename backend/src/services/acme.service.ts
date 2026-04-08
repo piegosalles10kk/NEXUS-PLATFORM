@@ -91,6 +91,8 @@ export async function provisionCert(appId: string, domain: string): Promise<void
     // Dynamic import of acme-client (optional dep)
     let acme: any;
     try {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore — acme-client is an optional runtime dependency without bundled types
       acme = await import('acme-client');
     } catch {
       throw new Error('acme-client not installed. Run: npm install acme-client');

@@ -47,7 +47,7 @@ router.post('/apps/:id/domain', authenticate, async (req, res, next) => {
   try {
     const { domain } = req.body;
     if (!domain) { res.status(400).json({ status: 'error', message: 'domain required' }); return; }
-    const result = await assignDomain(req.params.id, domain);
+    const result = await assignDomain(req.params.id as string, domain);
     res.json({ status: 'success', data: result });
   } catch (err) { next(err); }
 });
@@ -55,7 +55,7 @@ router.post('/apps/:id/domain', authenticate, async (req, res, next) => {
 // GET /depin/apps/:id/domain/verify
 router.get('/apps/:id/domain/verify', authenticate, async (req, res, next) => {
   try {
-    const app = await prisma.dePINApp.findUnique({ where: { id: req.params.id }, select: { customDomain: true } });
+    const app = await prisma.dePINApp.findUnique({ where: { id: req.params.id as string }, select: { customDomain: true } });
     if (!app?.customDomain) { res.status(400).json({ status: 'error', message: 'No custom domain set' }); return; }
     const dnsOk = await verifyDns(app.customDomain);
     res.json({ status: 'success', data: { dnsOk, domain: app.customDomain } });
