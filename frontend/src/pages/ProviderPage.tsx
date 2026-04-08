@@ -320,15 +320,19 @@ function NodePolicyPanel({node,surgeMultiplier,onSaved}:{node:ProviderNode;surge
       <div className="grid grid-cols-2 gap-3">
         <div className="p-4 rounded-xl bg-success/5 border border-success/20">
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
-            <TrendingUp className="w-3.5 h-3.5 text-success"/>Previsão mensal
+            <TrendingUp className="w-3.5 h-3.5 text-success"/>Ganho por minuto
           </div>
-          <p className="text-[22px] font-bold text-success leading-none">${monthly.toFixed(2)}</p>
+          <p className="text-[22px] font-bold text-success leading-none">
+            ${(monthly/(30*24*60)).toFixed(5)}
+          </p>
           {surgeMultiplier>1.05&&(
             <p className="text-[11px] text-text-muted mt-1 flex items-center gap-1">
               <Zap className="w-3 h-3 text-yellow-400"/>surge {surgeMultiplier.toFixed(2)}×
             </p>
           )}
-          <p className="text-[10px] text-text-muted mt-1.5">~60% utilização estimada · 50% abaixo da AWS</p>
+          <p className="text-[10px] text-text-muted mt-1.5">
+            ≈ ${monthly.toFixed(2)}/mês · 60% utilização
+          </p>
         </div>
         <div className={`p-4 rounded-xl border ${rank.bg} ${rank.border}`}>
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
