@@ -11,6 +11,8 @@ RUN go mod download
 
 COPY agent/ .
 
+RUN go mod tidy
+
 # Build para Linux amd64 (target principal dos nós doadores)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o nexus-agent ./cmd/agent

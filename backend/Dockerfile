@@ -6,6 +6,7 @@ COPY agent/go.mod agent/go.sum ./
 RUN go mod download
 
 COPY agent/ ./
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o nexus-agent-linux-amd64 ./cmd/agent
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o nexus-agent-linux-arm64 ./cmd/agent
 RUN CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o nexus-agent-windows-amd64.exe ./cmd/agent
