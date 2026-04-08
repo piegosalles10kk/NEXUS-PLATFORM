@@ -91,14 +91,17 @@ export function ModalSubmitButton({
   label = 'Confirmar',
   loading = false,
   disabled = false,
+  form,
 }: {
   label?: string;
   loading?: boolean;
   disabled?: boolean;
+  form?: string;
 }) {
   return (
     <button
       type="submit"
+      form={form}
       disabled={loading || disabled}
       className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-accent hover:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
     >

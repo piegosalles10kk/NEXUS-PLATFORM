@@ -7,7 +7,7 @@ import {
   Loader2, RefreshCw, AlertCircle, CheckCircle, Clock,
 } from 'lucide-react';
 import api from '../services/api';
-import { Card, CardHeader, CardDivider } from '../components/ui/Card';
+import { Card, CardHeader } from '../components/ui/Card';
 import { Modal, ModalCancelButton, ModalSubmitButton } from '../components/ui/Modal';
 
 /* ── Types ─────────────────────────────────────────────────── */
