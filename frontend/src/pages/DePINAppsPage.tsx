@@ -65,8 +65,8 @@ function CreateDePINAppModal({ open, onClose, onCreated }: CreateModalProps) {
     setError('');
     setLoading(true);
     try {
-      const res = await api.post('/depin/apps', form);
-      onCreated(res.data.data);
+      const res = await api.post('/v1/scheduler/deploy', form);
+      onCreated(res.data.data.app);
       onClose();
       setForm({ name: '', slug: '', executionMode: 'WASM', replicaCount: 1 });
     } catch (err: any) {
@@ -188,8 +188,8 @@ export default function DePINAppsPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/depin/apps');
-      setApps(res.data.data ?? []);
+      const res = await api.get('/v1/scheduler/apps');
+      setApps(res.data.data.apps ?? []);
     } catch {
       setApps([]);
     } finally {

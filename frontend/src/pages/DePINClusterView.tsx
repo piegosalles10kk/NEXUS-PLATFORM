@@ -90,8 +90,8 @@ export default function DePINClusterView() {
     if (!id) return;
     setLoading(true);
     try {
-      const res = await api.get(`/depin/apps/${id}`);
-      setApp(res.data.data);
+      const res = await api.get(`/v1/scheduler/apps/${id}`);
+      setApp(res.data.data.app);
     } catch {
       setApp(null);
     } finally {
