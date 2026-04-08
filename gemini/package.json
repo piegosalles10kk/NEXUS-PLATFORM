@@ -1,0 +1,10 @@
+{
+  "name": "10kk-platform",
+  "private": true,
+  "scripts": {
+    "test": "npm run test --prefix backend && npm run test --prefix frontend && cd agent && go test ./...",
+    "test:backend": "npm run test --prefix backend",
+    "test:frontend": "npm run test --prefix frontend",
+    "test:agent": "cd agent && go test ./..."
+  }
+}

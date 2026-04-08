@@ -1,0 +1,100 @@
+# ─── Node.js ──────────────────────────────────────────────────────────────────
+node_modules/
+.npm
+.eslintcache
+*.tsbuildinfo
+
+# ─── Build outputs ────────────────────────────────────────────────────────────
+dist/
+build/
+out/
+
+# ─── Environment & secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Certificados e chaves privadas — NUNCA commitar
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# GCP / cloud credentials — NUNCA commitar
+*service_account*.json
+*serviceaccount*.json
+*-credentials.json
+duda-*.json
+
+# ─── Prisma ───────────────────────────────────────────────────────────────────
+/backend/prisma/migrations/
+/backend/prisma/dev.db
+/backend/prisma/dev.db-journal
+
+# ─── Go (agent) ───────────────────────────────────────────────────────────────
+agent/dist/
+agent/10kk-agent-*
+*.exe
+*.test
+*.out
+
+# ─── Terraform ────────────────────────────────────────────────────────────────
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/.terraform.lock.hcl
+**/terraform.tfplan
+**/crash.log
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+.dockerignore
+!backend/.dockerignore
+!frontend/.dockerignore
+docker/certs/
+docker/data/
+
+# ─── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── DePIN / simulador ────────────────────────────────────────────────────────
+# Tokens de enrollment gerados pelos scripts de teste
+.nexus-dev-tokens
+# Binários do simulador compilados localmente
+agent/cmd/sim/sim
+agent/cmd/sim/sim.exe
+
+# ─── Certificados mTLS gerados em dev ────────────────────────────────────────
+backend/certs/
+agent/certs/
+/certs/
+
+# ─── Prisma migrations (geradas localmente — commitar apenas em prod) ─────────
+# (já inclui /backend/prisma/migrations/ acima)
+
+# ─── Scripts de chaos/provisioning — outputs ─────────────────────────────────
+scripts/*.log
+scripts/*.pid
+
+# ─── Logs & temp ──────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+
+# ─── Dados locais do Docker Compose dev ──────────────────────────────────────
+postgres-data/
+redis-data/

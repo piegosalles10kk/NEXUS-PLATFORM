@@ -1,0 +1,361 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADM
+  TECNICO
+  OBSERVADOR
+}
+
+enum EnvironmentType {
+  LOCAL
+  CLOUD
+  NODE
+}
+
+enum ProjectStatus {
+  ATIVO
+  FALHOU
+  PAUSADO
+}
+
+enum DeployStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+  ROLLED_BACK
+}
+
+enum StepActionType {
+  LOCAL_COMMAND
+  REMOTE_SSH_COMMAND
+}
+
+model User {
+  id           String          @id @default(uuid())
+  name         String
+  email        String          @unique
+  passwordHash String          @map("password_hash")
+  role         Role            @default(OBSERVADOR)
+  resetToken   String?         @map("reset_token")
+  resetExpires DateTime?       @map("reset_expires")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  deploys      DeployHistory[]
+  widgets      DashboardWidget[]
+
+  @@map("users")
+}
+
+model DashboardWidget {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // SERVER_GAUGE, SERVER_STORAGE, SERVER_NETWORK, PROJECT_STATUS
+  title     String
+  settings  Json?    // { nodeId: "...", projectId: "...", metric: "cpu|ram" }
+  x         Int      @default(0)
+  y         Int      @default(0)
+  w         Int      @default(1)
+  h         Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("dashboard_widgets")
+}
+
+model Project {
+  id                String               @id @default(uuid())
+  name              String
+  repoUrl           String               @map("repo_url")
+  branchTarget      String               @default("main") @map("branch_target")
+  environmentType   EnvironmentType      @default(LOCAL) @map("environment_type")
+  status            ProjectStatus        @default(ATIVO)
+  autoDeployEnabled Boolean              @default(true) @map("auto_deploy_enabled")
+  lbEnabled         Boolean              @default(false) @map("lb_enabled")
+  lbPort            Int?                 @map("lb_port")
+  lbAppPort         Int?                 @map("lb_app_port")
+  lbDomain          String?              @map("lb_domain")
+  lbHealthPath      String               @default("/health") @map("lb_health_path")
+  proxyHost         String?              @map("proxy_host")
+  proxyPort         Int?                 @map("proxy_port")
+  deployTimeoutMin  Int                  @default(10) @map("deploy_timeout_min")
+  healthCheckDelay  Int                  @default(15) @map("health_check_delay")
+  healthCheckUrl    String?              @map("health_check_url")
+  cloudServerId     String?              @map("cloud_server_id")
+  cloudServer       CloudServer?         @relation(fields: [cloudServerId], references: [id], onDelete: SetNull)
+  nodeId            String?              @map("node_id")
+  node              Node?                @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  secrets           ProjectSecret[]
+  deploys           DeployHistory[]
+  steps             WorkflowStep[]
+  instances         ContainerInstance[]
+  scalingPolicy     ScalingPolicy?
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  @@map("projects")
+}
+
+enum InstanceStatus {
+  RUNNING
+  UNHEALTHY
+  STOPPED
+}
+
+model ContainerInstance {
+  id            String         @id @default(uuid())
+  projectId     String         @map("project_id")
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  containerId   String         @map("container_id")
+  containerName String         @map("container_name")
+  replicaIndex  Int            @map("replica_index")
+  status        InstanceStatus @default(RUNNING)
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  @@map("container_instances")
+}
+
+model ScalingPolicy {
+  id              String    @id @default(uuid())
+  projectId       String    @unique @map("project_id")
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  maxCpuPercent   Float     @default(80) @map("max_cpu_percent")
+  maxMemPercent   Float     @default(80) @map("max_mem_percent")
+  maxResponseMs   Int       @default(2000) @map("max_response_ms")
+  minReplicas     Int       @default(1) @map("min_replicas")
+  maxReplicas     Int       @default(3) @map("max_replicas")
+  cooldownSeconds Int       @default(120) @map("cooldown_seconds")
+  scaleEnabled    Boolean   @default(true) @map("scale_enabled")
+  lastScaleAt     DateTime? @map("last_scale_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("scaling_policies")
+}
+
+model WorkflowStep {
+  id        String         @id @default(uuid())
+  projectId String         @map("project_id")
+  order     Int
+  name      String
+  type      StepActionType
+  command   String         @db.Text
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  @@unique([projectId, order])
+  @@map("workflow_steps")
+}
+
+model ProjectSecret {
+  id             String  @id @default(uuid())
+  projectId      String  @map("project_id")
+  keyName        String  @map("key_name")
+  encryptedValue String  @map("encrypted_value")
+  project        Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, keyName])
+  @@map("project_secrets")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+model DeployHistory {
+  id                String       @id @default(uuid())
+  projectId         String       @map("project_id")
+  triggeredById     String?      @map("triggered_by_id")
+  commitHash        String?      @map("commit_hash")
+  commitMsg         String?      @map("commit_msg")
+  commitAuthorName  String?      @map("commit_author_name")
+  commitAuthorEmail String?      @map("commit_author_email")
+  status            DeployStatus @default(RUNNING)
+  testsPassed     Int?         @map("tests_passed")
+  testsTotal      Int?         @map("tests_total")
+  logOutput       Json?        @map("log_output") @db.JsonB
+  project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  triggeredBy     User?        @relation(fields: [triggeredById], references: [id], onDelete: SetNull)
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  @@map("deploy_history")
+}
+
+model GatewayRoute {
+  id            String   @id @default(uuid())
+  name          String
+  routePath     String   @unique @map("route_path")
+  targetUrl     String   @map("target_url")
+  checkPort     Int      @default(0) @map("check_port")
+  isActive      Boolean  @default(true) @map("is_active")
+  isTunnelled   Boolean  @default(false) @map("is_tunnelled")
+  tunnelNodeId  String?  @map("tunnel_node_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("gateway_routes")
+}
+
+// ─── Agent / Node Module ──────────────────────────────────────────────────────
+enum NodeStatus {
+  ONLINE
+  OFFLINE
+  UPDATING
+}
+
+model Node {
+  id          String           @id @default(uuid())
+  name        String
+  os          String
+  arch        String
+  token       String           @unique
+  status      NodeStatus       @default(OFFLINE)
+  version     String           @default("v1.0.0")
+  ipAddress   String?          @map("ip_address")
+  country     String?          // ISO-3166-1 alpha-2, e.g. "BR"
+  city        String?
+  lastPing    DateTime         @updatedAt @map("last_ping")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  projects    Project[]
+  assignments NodeAssignment[]
+
+  @@map("nodes")
+}
+
+// ─── DePIN Execution Layer ────────────────────────────────────────────────────
+
+enum ExecutionMode {
+  WASM
+  MICROVM
+  AUTO
+}
+
+enum DePINAppStatus {
+  PENDING
+  RUNNING
+  DEGRADED
+  OFFLINE
+}
+
+enum AssignmentRole {
+  LEADER
+  FOLLOWER
+  WASM_WORKER
+}
+
+enum AssignmentStatus {
+  RUNNING
+  OFFLINE
+  MIGRATING
+}
+
+model DePINApp {
+  id            String           @id @default(uuid())
+  name          String
+  slug          String           @unique
+  executionMode ExecutionMode    @map("execution_mode")
+  status        DePINAppStatus   @default(PENDING)
+  replicaCount  Int              @default(3) @map("replica_count")
+  imageRef      String?          @map("image_ref")
+  envVars       Json?            @map("env_vars")
+  port          Int?
+  region        String?
+  assignments   NodeAssignment[]
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  @@map("depin_apps")
+}
+
+model NodeAssignment {
+  id        String           @id @default(uuid())
+  appId     String           @map("app_id")
+  app       DePINApp         @relation(fields: [appId], references: [id], onDelete: Cascade)
+  nodeId    String           @map("node_id")
+  node      Node             @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  role      AssignmentRole   @default(WASM_WORKER)
+  status    AssignmentStatus @default(RUNNING)
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  @@unique([appId, nodeId])
+  @@map("node_assignments")
+}
+
+// ─── Billing / Proof of Computing ────────────────────────────────────────────
+
+model UsageRecord {
+  id          String   @id @default(uuid())
+  appId       String   @map("app_id")
+  nodeId      String   @map("node_id")
+  windowStart DateTime @map("window_start")
+  windowEnd   DateTime @map("window_end")
+  cpuMs       BigInt   @default(0) @map("cpu_ms")        // CPU milliseconds consumed
+  ramMbS      BigInt   @default(0) @map("ram_mb_s")      // RAM MB·seconds consumed
+  netRxBytes  BigInt   @default(0) @map("net_rx_bytes")
+  netTxBytes  BigInt   @default(0) @map("net_tx_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([appId, windowStart])
+  @@index([nodeId, windowStart])
+  @@map("usage_records")
+}
+
+// ─── Cloud Module ─────────────────────────────────────────────────────────────
+enum CloudProviderType {
+  AWS
+  DIGITALOCEAN
+  AZURE
+  GCP
+}
+
+enum CloudServerStatus {
+  PROVISIONING
+  RUNNING
+  STOPPED
+  ERROR
+}
+
+model CloudProvider {
+  id              String            @id @default(uuid())
+  name            String
+  type            CloudProviderType
+  encryptedApiKey String            @map("encrypted_api_key")
+  region          String
+  servers         CloudServer[]
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  @@map("cloud_providers")
+}
+
+model CloudServer {
+  id             String            @id @default(uuid())
+  providerId     String            @map("provider_id")
+  provider       CloudProvider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name           String
+  region         String
+  instanceType   String            @map("instance_type")
+  ip             String?
+  status         CloudServerStatus @default(PROVISIONING)
+  agentConnected Boolean           @default(false) @map("agent_connected")
+  agentVersion   String?           @map("agent_version")
+  sshPublicKey   String?           @db.Text @map("ssh_public_key")
+  lastError      String?           @db.Text @map("last_error")
+  projects       Project[]
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  @@map("cloud_servers")
+}

@@ -1,0 +1,33 @@
+# ── Nexus — Local Development Stack ──────────────────────────────────────────
+# Sobe apenas PostgreSQL + Redis localmente.
+# O backend e o frontend rodam fora do Docker (npm run dev).
+#
+# Uso:
+#   docker compose -f docker-compose.dev.yml up -d
+#   cd backend && npx prisma migrate deploy && npm run dev
+#
+version: '3.9'
+
+services:
+  dev-postgres:
+    image: postgres:16-alpine
+    container_name: nexus-dev-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nexus_admin
+      POSTGRES_PASSWORD: "Inbox@2026"
+      POSTGRES_DB: nexus_db
+    volumes:
+      - nexus_dev_postgres:/var/lib/postgresql/data
+
+  dev-redis:
+    image: redis:7-alpine
+    container_name: nexus-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  nexus_dev_postgres:

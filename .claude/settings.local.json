@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(DATABASE_URL=\"postgresql://nexus_admin:Inbox%402026@localhost:5432/nexus_db\" npx prisma migrate deploy)",
+      "Bash(DATABASE_URL='postgresql://nexus_admin:Inbox@2026@localhost:5432/nexus_db' npx prisma migrate deploy)",
+      "Bash(DATABASE_URL='postgresql://nexus_admin:Inbox%402026@127.0.0.1:5432/nexus_db' npx prisma migrate deploy)",
+      "Bash(DATABASE_URL='postgresql://nexus_admin:Inbox%402026@127.0.0.1:5432/nexus_db' npx prisma db seed)",
+      "Bash(DATABASE_URL='postgresql://nexus_admin:Inbox%402026@127.0.0.1:5432/nexus_db' REDIS_URL='redis://127.0.0.1:6379' JWT_SECRET='nexus-dev-jwt-secret-change-in-production' ENCRYPTION_KEY='e1357eaa3a1ca199d708b9580f0c40811316b1df6e55d5404248c3360cfb2713' FRONTEND_URL='http://localhost:8000' GEMINI_API_KEY='FAKE' PORT=4500 npm run dev)",
+      "Bash(echo \"Backend PID: $!\")",
+      "Bash(curl -s http://localhost:4500/api/v1/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"admin@cicd.local\",\"password\":\"admin123\"}')",
+      "Read(//tmp/**)",
+      "Bash(grep -n \"login\\\\|Missing or invalid\\\\|authorization\" \"c:/Users/piego/Desktop/Projeto Nexus/Nexus-Deployment-Plataform-main/backend/src/modules/auth/\"*.ts)",
+      "Bash(grep -n \"Missing or invalid\\\\|authorization header\" \"c:/Users/piego/Desktop/Projeto Nexus/Nexus-Deployment-Plataform-main/backend/src/middlewares/\"*.ts)",
+      "Bash(curl -s http://localhost:4500/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"admin@cicd.local\",\"password\":\"admin123\"}')",
+      "Bash(curl -s http://localhost:4500/api/v1/agent/nodes -H 'Authorization: Bearer __TRACKED_VAR__')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:4500/api/v1/scheduler/apps/__TRACKED_VAR__ -H 'Authorization: Bearer __TRACKED_VAR__')",
+      "Bash(node -e ':*)",
+      "Bash(curl -s http://localhost:4500/depin/ingress-demo/api/orders/123)",
+      "Bash(powershell.exe -Command 'try { $c = New-Object Net.Sockets.TcpClient\\('\\\\''127.0.0.1'\\\\'', 54342\\); Write-Host '\\\\''CONNECTED port 54342'\\\\''; $c.Close\\(\\) } catch { Write-Host '\\\\''FAILED:'\\\\'' $_.Exception.Message }')",
+      "Bash(powershell.exe -Command \"\\(New-Object Net.Sockets.TcpClient\\('127.0.0.1', 54342\\)\\).Connected\")",
+      "Bash(netstat -ano)"
+    ]
+  }
+}

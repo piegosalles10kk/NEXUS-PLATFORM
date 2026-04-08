@@ -1,0 +1,108 @@
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: 10kk-docker-proxy
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1
+      - CONTAINERS_CREATE=1
+      - CONTAINERS_START=1
+      - CONTAINERS_DELETE=1
+      - IMAGES=1
+      - IMAGES_CREATE=1
+      - NETWORKS=1
+      - VOLUMES=1
+      - EVENTS=1
+      - INFO=1
+      - PING=1
+      - VERSION=1
+      - EXEC=1
+      - EXEC_START=1
+      - EXEC_CREATE=1
+      - POST=1
+      - DELETE=1
+    networks:
+      - 10kk-proxy-net
+
+  cicd-postgres:
+    image: postgres:16-alpine
+    container_name: 10kk-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - 10kk-network
+
+  cicd-redis:
+    image: redis:7-alpine
+    container_name: 10kk-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - 10kk-network
+
+  cicd-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: 10kk-backend
+    restart: always
+    ports:
+      - "4500:4500"
+      - "8443:8443"
+    env_file:
+      - .env
+    environment:
+      - GATEWAY_CONF_PATH=/shared/gateway.conf
+      - DOCKER_HOST=tcp://10kk-docker-proxy:2375
+    volumes:
+      - gateway_conf:/shared
+    depends_on:
+      - cicd-postgres
+      - cicd-redis
+      - docker-proxy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - 10kk-network
+      - 10kk-lb-net
+      - 10kk-proxy-net
+
+  cicd-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: 10kk-frontend
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - gateway_conf:/etc/nginx/nexus-gateway
+    depends_on:
+      - cicd-backend
+    networks:
+      - 10kk-network
+
+networks:
+  10kk-network:
+    driver: bridge
+  10kk-lb-net:
+    driver: bridge
+  10kk-proxy-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  gateway_conf:
