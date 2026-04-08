@@ -1,5 +1,5 @@
 # Stage 1: Build Go agent (linux/amd64 and linux/arm64)
-FROM golang:1.23-alpine AS agent-builder
+FROM golang:1.25-alpine AS agent-builder
 
 WORKDIR /agent
 COPY agent/go.mod agent/go.sum ./
