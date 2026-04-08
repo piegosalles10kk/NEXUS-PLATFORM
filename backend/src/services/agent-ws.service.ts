@@ -390,39 +390,47 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
           break;
 
         case 'metrics':
-          // Legacy or fallback broadcast
+          // Legacy broadcast — also used for GPU detection (HostMetrics includes GPUs)
+          if (Array.isArray(msg.data?.gpus) && msg.data.gpus.length > 0) {
+            const gpus: Array<{ name: string; memory_total_mb: number }> = msg.data.gpus;
+            prisma.node.update({
+              where: { id: nodeId },
+              data: {
+                gpuModel:    gpus[0].name ?? null,
+                gpuMemoryMb: gpus.reduce((s, g) => s + (g.memory_total_mb ?? 0), 0),
+                gpuCount:    gpus.length,
+              },
+            }).catch(console.error);
+          }
           io.emit('node:metrics', { nodeId, data: msg.data });
           break;
 
         case 'telemetry':
           // Save to Redis (capped to last 100 entries)
-          console.log(`📊 Telemetry received from nodeId=${nodeId}`);
           getRedisClient().then((redis) => {
             const key = `node:${nodeId}:telemetry`;
             const m = redis.multi();
-            // LPUSH adds to the head (index 0)
             m.lPush(key, JSON.stringify(msg.payload));
-            // LTRIM keeps indices 0 to 99
             m.lTrim(key, 0, 99);
             m.exec().catch(err => console.error(`[redis] exec failed for nodeId=${nodeId}:`, err));
           }).catch(err => {
             console.error(`[redis] connection failed for nodeId=${nodeId}:`, err);
           });
 
-          // Persist GPU info to DB if the agent reported GPUs
+          // Persist GPU info from telemetry payload (5s stream, has gpus field now)
           if (Array.isArray(msg.payload?.gpus) && msg.payload.gpus.length > 0) {
             const gpus: Array<{ name: string; memory_total_mb: number }> = msg.payload.gpus;
-            // Use the first GPU's name + sum total memory across all GPUs
-            const gpuModel     = gpus[0].name ?? null;
-            const gpuMemoryMb  = gpus.reduce((sum, g) => sum + (g.memory_total_mb ?? 0), 0);
-            const gpuCount     = gpus.length;
             prisma.node.update({
               where: { id: nodeId },
-              data: { gpuModel, gpuMemoryMb, gpuCount },
+              data: {
+                gpuModel:    gpus[0].name ?? null,
+                gpuMemoryMb: gpus.reduce((s, g) => s + (g.memory_total_mb ?? 0), 0),
+                gpuCount:    gpus.length,
+              },
             }).catch(console.error);
           }
 
-          // Broadcast to connected web clients
+          // Broadcast to connected web clients (includes gpus array)
           io.emit('node:telemetry', { nodeId, data: msg.payload });
           break;
 

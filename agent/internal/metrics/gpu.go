@@ -40,6 +40,9 @@ type GPUInfo struct {
 	DriverVersion string `json:"driver_version,omitempty"`
 }
 
+// CollectGPUs is the exported version of collectGPUs for use by other packages.
+func CollectGPUs() []GPUInfo { return collectGPUs() }
+
 // collectGPUs runs nvidia-smi to enumerate available NVIDIA GPUs.
 // Returns an empty slice (not an error) if nvidia-smi is not installed or
 // no GPUs are found — enabling graceful degradation on CPU-only hosts.

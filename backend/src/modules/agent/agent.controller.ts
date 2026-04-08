@@ -71,7 +71,13 @@ export async function enrollAgent(req: Request, res: Response, next: NextFunctio
 // ── GET /api/v1/agent/nodes ───────────────────────────────────────────────────
 export async function listNodes(_req: Request, res: Response, next: NextFunction) {
   try {
-    const nodes = await prisma.node.findMany({ orderBy: { createdAt: 'desc' } });
+    const nodes = await prisma.node.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        policy: true,
+        _count: { select: { assignments: true } },
+      },
+    });
     res.json({ status: 'success', data: { nodes } });
   } catch (error) {
     next(error);
@@ -209,12 +215,16 @@ export async function upsertNodePolicy(req: Request<{ id: string }>, res: Respon
       maxBandwidthMbps = 100,
       scheduleStart = '00:00',
       scheduleEnd = '23:59',
+      offerGpu = false,
+      maxGpuPercent = 100,
     } = req.body;
+
+    const policyData = { maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd, offerGpu, maxGpuPercent };
 
     const policy = await prisma.nodePolicy.upsert({
       where: { nodeId: id },
-      create: { nodeId: id, maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
-      update: { maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
+      create: { nodeId: id, ...policyData },
+      update: policyData,
     });
 
     // Push update to the agent over WS so it reconfigures cgroups immediately
@@ -222,7 +232,7 @@ export async function upsertNodePolicy(req: Request<{ id: string }>, res: Respon
     if (ws && ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({
         action: 'update_policy',
-        policy: { maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
+        policy: policyData,
       }));
     }
 

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/10kk/agent/internal/metrics"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -14,17 +15,18 @@ import (
 
 // TelemetryPayload defines the data sent to the backend
 type TelemetryPayload struct {
-	Timestamp int64         `json:"timestamp"`
-	CPUUsage  float64       `json:"cpuUsage"` // Percentage
-	RAMUsage  float64       `json:"ramUsage"` // Percentage
-	RAMTotal  uint64        `json:"ramTotal"`
-	RAMUsed   uint64        `json:"ramUsed"`
-	DiskUsage float64       `json:"diskUsage"` // Percentage of primary partition
-	DiskTotal uint64        `json:"diskTotal"`
-	DiskUsed  uint64        `json:"diskUsed"`
-	NetTxSec  uint64        `json:"netTxSec"` // Bytes sent per second
-	NetRxSec  uint64        `json:"netRxSec"` // Bytes received per second
-	TopProcs  []ProcessInfo `json:"topProcs"`
+	Timestamp int64               `json:"timestamp"`
+	CPUUsage  float64             `json:"cpuUsage"` // Percentage
+	RAMUsage  float64             `json:"ramUsage"` // Percentage
+	RAMTotal  uint64              `json:"ramTotal"`
+	RAMUsed   uint64              `json:"ramUsed"`
+	DiskUsage float64             `json:"diskUsage"` // Percentage of primary partition
+	DiskTotal uint64              `json:"diskTotal"`
+	DiskUsed  uint64              `json:"diskUsed"`
+	NetTxSec  uint64              `json:"netTxSec"` // Bytes sent per second
+	NetRxSec  uint64              `json:"netRxSec"` // Bytes received per second
+	TopProcs  []ProcessInfo       `json:"topProcs"`
+	GPUs      []metrics.GPUInfo   `json:"gpus"` // empty slice on CPU-only hosts
 }
 
 type ProcessInfo struct {
@@ -129,6 +131,9 @@ func Collect() (*TelemetryPayload, error) {
 		}
 		payload.TopProcs = procInfos[:limit]
 	}
+
+	// GPU — non-fatal; returns empty slice on CPU-only hosts
+	payload.GPUs = metrics.CollectGPUs()
 
 	return payload, nil
 }

@@ -402,6 +402,8 @@ model NodePolicy {
   maxBandwidthMbps   Int      @default(100) @map("max_bandwidth_mbps")
   scheduleStart      String?  @map("schedule_start")  // "08:00" UTC
   scheduleEnd        String?  @map("schedule_end")    // "22:00" UTC
+  offerGpu           Boolean  @default(false) @map("offer_gpu")
+  maxGpuPercent      Float    @default(100) @map("max_gpu_percent")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("node_policies")
