@@ -90,14 +90,6 @@ function fmtMb(mb: number): string {
   return `${mb} MB`;
 }
 
-function fmtBytes2Gb(bytes: number): number {
-  return Math.round(bytes / 1024 / 1024 / 1024);
-}
-
-function fmtBytes2Mb(bytes: number): number {
-  return Math.round(bytes / 1024 / 1024);
-}
-
 function capsFromTelemetry(t: TelemetryPayload): HardwareCaps {
   const ramTotalMb = Math.ceil(t.ramTotal / 1024 / 1024);
   const disks = t.disks ?? [];
