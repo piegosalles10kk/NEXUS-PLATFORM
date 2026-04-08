@@ -18,6 +18,16 @@ interface GPUInfo {
   driver_version?: string;
 }
 
+interface DiskInfo {
+  device: string;
+  mountpoint: string;
+  fstype: string;
+  total: number;   // bytes
+  used: number;    // bytes
+  free: number;    // bytes
+  used_percent: number;
+}
+
 interface NodePolicy {
   maxCpuPercent:    number;
   maxRamMb:         number;
@@ -44,18 +54,27 @@ interface ProviderNode {
 }
 
 interface TelemetryPayload {
-  timestamp: number;
-  cpuUsage:  number;
-  ramUsage:  number;
-  ramTotal:  number;
-  ramUsed:   number;
-  diskUsage: number;
-  diskTotal: number;
-  diskUsed:  number;
-  netTxSec:  number;
-  netRxSec:  number;
-  topProcs?: { pid: number; name: string; cpu: number; ram: number }[];
-  gpus?:     GPUInfo[];
+  timestamp:  number;
+  cpuUsage:   number;
+  cpuCores?:  number;
+  ramUsage:   number;
+  ramTotal:   number;
+  ramUsed:    number;
+  diskUsage:  number;
+  diskTotal:  number;
+  diskUsed:   number;
+  disks?:     DiskInfo[];
+  netTxSec:   number;
+  netRxSec:   number;
+  topProcs?:  { pid: number; name: string; cpu: number; ram: number }[];
+  gpus?:      GPUInfo[];
+}
+
+/** Hardware capabilities derived from first telemetry snapshot */
+interface HardwareCaps {
+  ramTotalMb:   number; // actual RAM
+  diskTotalGb:  number; // sum of all physical disks
+  cpuCores:     number;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */
@@ -71,13 +90,31 @@ function fmtMb(mb: number): string {
   return `${mb} MB`;
 }
 
+function fmtBytes2Gb(bytes: number): number {
+  return Math.round(bytes / 1024 / 1024 / 1024);
+}
+
+function fmtBytes2Mb(bytes: number): number {
+  return Math.round(bytes / 1024 / 1024);
+}
+
+function capsFromTelemetry(t: TelemetryPayload): HardwareCaps {
+  const ramTotalMb = Math.ceil(t.ramTotal / 1024 / 1024);
+  const disks = t.disks ?? [];
+  const diskTotalGb = disks.length > 0
+    ? Math.ceil(disks.reduce((s, d) => s + d.total, 0) / 1024 / 1024 / 1024)
+    : Math.ceil(t.diskTotal / 1024 / 1024 / 1024);
+  return {
+    ramTotalMb: Math.max(ramTotalMb, 256),
+    diskTotalGb: Math.max(diskTotalGb, 1),
+    cpuCores: t.cpuCores ?? 1,
+  };
+}
+
 /* ── Power Rank ─────────────────────────────────────────────────── */
 interface RankInfo {
   rank: 'Bronze' | 'Silver' | 'Gold' | 'Platinum';
-  color: string;
-  bg: string;
-  border: string;
-  score: number;
+  color: string; bg: string; border: string; score: number;
 }
 
 function getPowerRank(p: NodePolicy, hasGpu: boolean): RankInfo {
@@ -87,14 +124,12 @@ function getPowerRank(p: NodePolicy, hasGpu: boolean): RankInfo {
     (p.maxRamMb / 32768) * 25 +
     (p.maxBandwidthMbps / 10000) * 15 +
     gpuBonus;
-
   if (score >= 75) return { rank: 'Platinum', color: 'text-[#b8c7ff]', bg: 'bg-[#b8c7ff]/10', border: 'border-[#b8c7ff]/30', score };
   if (score >= 50) return { rank: 'Gold',     color: 'text-[#ffd700]', bg: 'bg-[#ffd700]/10', border: 'border-[#ffd700]/30', score };
   if (score >= 25) return { rank: 'Silver',   color: 'text-[#c8d0e0]', bg: 'bg-[#c8d0e0]/10', border: 'border-[#c8d0e0]/30', score };
   return              { rank: 'Bronze',   color: 'text-[#cd9f6a]', bg: 'bg-[#cd9f6a]/10', border: 'border-[#cd9f6a]/30', score };
 }
 
-/* ── Earnings preview ───────────────────────────────────────────── */
 function calcMonthlyEarnings(p: NodePolicy, surge: number, hasGpu: boolean): number {
   const gpuBonus = hasGpu && p.offerGpu ? 0.80 : 0;
   const hourlyBase =
@@ -111,38 +146,26 @@ function calcMonthlyEarnings(p: NodePolicy, surge: number, hasGpu: boolean): num
   return hourlyBase * surge * powerFactor * 24 * 30;
 }
 
-/* ── Gauge Component ─────────────────────────────────────────────── */
+/* ── Gauge ───────────────────────────────────────────────────────── */
 function Gauge({ value, label, color = '#6366f1', icon }: {
-  value: number;
-  label: string;
-  color?: string;
-  icon: React.ReactNode;
+  value: number; label: string; color?: string; icon: React.ReactNode;
 }) {
-  const clampedVal = Math.min(100, Math.max(0, value));
   const r = 26;
   const circ = 2 * Math.PI * r;
-  const dash = (clampedVal / 100) * circ;
-
+  const dash = (Math.min(100, Math.max(0, value)) / 100) * circ;
   return (
     <div className="flex flex-col items-center gap-1.5">
       <div className="relative w-16 h-16">
         <svg viewBox="0 0 60 60" className="w-full h-full -rotate-90">
           <circle cx="30" cy="30" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
-          <circle
-            cx="30" cy="30" r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth="5"
-            strokeLinecap="round"
+          <circle cx="30" cy="30" r={r} fill="none" stroke={color} strokeWidth="5" strokeLinecap="round"
             strokeDasharray={`${dash} ${circ - dash}`}
             style={{ transition: 'stroke-dasharray 0.4s ease' }}
           />
         </svg>
-        <div className="absolute inset-0 flex items-center justify-center text-white/60">
-          {icon}
-        </div>
+        <div className="absolute inset-0 flex items-center justify-center text-white/60">{icon}</div>
       </div>
-      <p className="text-[15px] font-bold text-text-primary leading-none">{clampedVal.toFixed(0)}%</p>
+      <p className="text-[15px] font-bold text-text-primary leading-none">{value.toFixed(0)}%</p>
       <p className="text-[11px] text-text-muted">{label}</p>
     </div>
   );
@@ -152,36 +175,40 @@ function Gauge({ value, label, color = '#6366f1', icon }: {
 function MiniBar({ value, color = 'bg-accent' }: { value: number; color?: string }) {
   return (
     <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
-      <div
-        className={`h-full ${color} rounded-full transition-all duration-300`}
-        style={{ width: `${Math.min(100, value)}%` }}
-      />
+      <div className={`h-full ${color} rounded-full transition-all duration-300`} style={{ width: `${Math.min(100, value)}%` }} />
     </div>
   );
 }
 
 /* ── Live Telemetry Panel ────────────────────────────────────────── */
-function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
+function LiveTelemetryPanel({ nodeId, onHardwareCaps }: {
+  nodeId: string;
+  onHardwareCaps: (caps: HardwareCaps) => void;
+}) {
   const [live, setLive] = useState<TelemetryPayload | null>(null);
   const [connected, setConnected] = useState(false);
+  const reportedCaps = useState(false);
 
   useEffect(() => {
     const socket = getSocket();
     connectSocket();
 
     const handler = (data: { nodeId: string; data: TelemetryPayload }) => {
-      if (data.nodeId === nodeId) setLive(data.data);
+      if (data.nodeId !== nodeId) return;
+      setLive(data.data);
+      // Report hardware caps once per node selection
+      if (!reportedCaps[0]) {
+        reportedCaps[1](true);
+        onHardwareCaps(capsFromTelemetry(data.data));
+      }
     };
 
     socket.on('connect', () => setConnected(true));
     socket.on('disconnect', () => setConnected(false));
     socket.on('node:telemetry', handler);
-
     if (socket.connected) setConnected(true);
 
-    return () => {
-      socket.off('node:telemetry', handler);
-    };
+    return () => { socket.off('node:telemetry', handler); };
   }, [nodeId]);
 
   if (!live) {
@@ -195,11 +222,11 @@ function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
     );
   }
 
-  const gpus = live.gpus ?? [];
+  const gpus  = live.gpus ?? [];
+  const disks = live.disks ?? [];
 
   return (
     <div className="space-y-5">
-      {/* Connection indicator */}
       <div className="flex items-center justify-between">
         <p className="text-[12px] font-semibold text-text-secondary uppercase tracking-wider">Live Stats</p>
         <div className="flex items-center gap-1.5 text-[11px] text-success">
@@ -208,31 +235,26 @@ function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
         </div>
       </div>
 
-      {/* Gauges row */}
+      {/* Gauges */}
       <div className="grid grid-cols-4 gap-2">
-        <Gauge value={live.cpuUsage} label="CPU" icon={<Cpu className="w-4 h-4" />} color="#6366f1" />
-        <Gauge value={live.ramUsage} label="RAM" icon={<MemoryStick className="w-4 h-4" />} color="#22d3ee" />
-        <Gauge value={live.diskUsage} label="Disco" icon={<HardDrive className="w-4 h-4" />} color="#f59e0b" />
-        <Gauge
-          value={gpus.length > 0 ? (gpus[0].utilization_percent ?? 0) : 0}
-          label="GPU"
-          icon={<Zap className="w-4 h-4" />}
-          color={gpus.length > 0 ? '#a855f7' : '#374151'}
-        />
+        <Gauge value={live.cpuUsage}  label={`CPU${live.cpuCores ? ` ×${live.cpuCores}` : ''}`} icon={<Cpu className="w-4 h-4" />}          color="#6366f1" />
+        <Gauge value={live.ramUsage}  label="RAM"                                                  icon={<MemoryStick className="w-4 h-4" />}  color="#22d3ee" />
+        <Gauge value={live.diskUsage} label="Disco"                                                icon={<HardDrive className="w-4 h-4" />}    color="#f59e0b" />
+        <Gauge value={gpus.length > 0 ? (gpus[0].utilization_percent ?? 0) : 0} label="GPU"
+          icon={<Zap className="w-4 h-4" />} color={gpus.length > 0 ? '#a855f7' : '#374151'} />
       </div>
 
-      {/* Detailed card */}
+      {/* RAM + Network */}
       <div className="grid grid-cols-2 gap-3">
-        {/* RAM detail */}
         <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-2">
           <div className="flex items-center justify-between text-[12px]">
             <span className="text-text-muted flex items-center gap-1"><MemoryStick className="w-3 h-3" /> RAM</span>
-            <span className="text-text-primary font-semibold">{fmtMb(live.ramUsed / 1024 / 1024)} / {fmtMb(live.ramTotal / 1024 / 1024)}</span>
+            <span className="text-text-primary font-semibold">
+              {fmtMb(live.ramUsed / 1024 / 1024)} / {fmtMb(live.ramTotal / 1024 / 1024)}
+            </span>
           </div>
           <MiniBar value={live.ramUsage} color="bg-cyan-400" />
         </div>
-
-        {/* Network */}
         <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1">
           <p className="text-[12px] text-text-muted flex items-center gap-1"><Wifi className="w-3 h-3" /> Rede</p>
           <div className="flex items-center gap-2 text-[12px]">
@@ -246,7 +268,46 @@ function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
         </div>
       </div>
 
-      {/* GPU details (only if present) */}
+      {/* All Disks */}
+      {disks.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+            Discos ({disks.length})
+          </p>
+          {disks.map((d, i) => (
+            <div key={i} className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1.5">
+              <div className="flex items-center justify-between text-[12px]">
+                <div className="flex items-center gap-1.5 text-text-secondary">
+                  <HardDrive className="w-3 h-3 shrink-0 text-amber-400" />
+                  <span className="font-mono truncate max-w-[120px]">{d.mountpoint}</span>
+                  <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded bg-white/[0.06]">{d.fstype}</span>
+                </div>
+                <span className="text-text-primary font-semibold shrink-0">
+                  {fmtMb(d.used / 1024 / 1024)} / {fmtMb(d.total / 1024 / 1024)}
+                </span>
+              </div>
+              <MiniBar value={d.used_percent} color={d.used_percent > 90 ? 'bg-red-400' : d.used_percent > 70 ? 'bg-amber-400' : 'bg-amber-500'} />
+              <div className="flex justify-between text-[10px] text-text-muted">
+                <span className="text-emerald-400">Livre: {fmtMb(d.free / 1024 / 1024)}</span>
+                <span>{d.used_percent.toFixed(1)}% usado</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Fallback single disk */
+        <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1.5">
+          <div className="flex items-center justify-between text-[12px]">
+            <span className="text-text-muted flex items-center gap-1"><HardDrive className="w-3 h-3" /> Disco</span>
+            <span className="text-text-primary font-semibold">
+              {fmtMb(live.diskUsed / 1024 / 1024)} / {fmtMb(live.diskTotal / 1024 / 1024)}
+            </span>
+          </div>
+          <MiniBar value={live.diskUsage} color="bg-amber-400" />
+        </div>
+      )}
+
+      {/* GPU */}
       {gpus.length > 0 && (
         <div className="p-3 rounded-xl bg-purple-500/5 border border-purple-500/20 space-y-2">
           <p className="text-[12px] font-semibold text-purple-300 flex items-center gap-1.5">
@@ -272,7 +333,7 @@ function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
       {(live.topProcs ?? []).length > 0 && (
         <div className="space-y-1">
           <p className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Top Processos</p>
-          {(live.topProcs ?? []).slice(0, 5).map((p) => (
+          {(live.topProcs ?? []).slice(0, 5).map(p => (
             <div key={p.pid} className="flex items-center justify-between text-[12px] py-1 border-b border-white/[0.04]">
               <span className="text-text-secondary truncate max-w-[140px]">{p.name}</span>
               <div className="flex gap-3 text-text-muted">
@@ -287,64 +348,50 @@ function LiveTelemetryPanel({ nodeId }: { nodeId: string }) {
   );
 }
 
-/* ── Enhanced PolicySlider ──────────────────────────────────────── */
+/* ── PolicySlider ────────────────────────────────────────────────── */
 function PolicySlider({
   label, icon, value, min, max, step, unit, onChange, disabled = false,
 }: {
-  label: string;
-  icon: React.ReactNode;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  unit: string;
-  onChange: (v: number) => void;
-  disabled?: boolean;
+  label: string; icon: React.ReactNode; value: number;
+  min: number; max: number; step: number; unit: string;
+  onChange: (v: number) => void; disabled?: boolean;
 }) {
   const [dragging, setDragging] = useState(false);
   const pct = ((value - min) / (max - min)) * 100;
-
   return (
-    <div className={`p-4 rounded-xl bg-white/[0.04] backdrop-blur-md border border-white/[0.06] transition-all ${disabled ? 'opacity-40 pointer-events-none' : 'hover:border-white/10'}`}>
+    <div className={`p-4 rounded-xl bg-white/[0.04] border border-white/[0.06] transition-all ${disabled ? 'opacity-40 pointer-events-none' : 'hover:border-white/10'}`}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-[13px] text-text-secondary">
-          <span className="text-text-muted">{icon}</span>
-          {label}
+          <span className="text-text-muted">{icon}</span>{label}
         </div>
-        <span className={`font-bold transition-all duration-150 origin-right ${dragging ? 'text-[16px] text-accent scale-110' : 'text-[13px] text-text-primary scale-100'}`}>
+        <span className={`font-bold transition-all duration-150 ${dragging ? 'text-[16px] text-accent scale-110' : 'text-[13px] text-text-primary'}`}>
           {value}{unit}
         </span>
       </div>
-
       <input
-        type="range"
-        min={min} max={max} step={step} value={value}
-        onMouseDown={() => setDragging(true)}
-        onMouseUp={() => setDragging(false)}
-        onTouchStart={() => setDragging(true)}
-        onTouchEnd={() => setDragging(false)}
+        type="range" min={min} max={max} step={step} value={value}
+        onMouseDown={() => setDragging(true)} onMouseUp={() => setDragging(false)}
+        onTouchStart={() => setDragging(true)} onTouchEnd={() => setDragging(false)}
         onBlur={() => setDragging(false)}
         onChange={e => onChange(Number(e.target.value))}
         style={{ '--pct': `${pct}%` } as React.CSSProperties}
         className="w-full h-2 rounded-full appearance-none cursor-pointer
           [background:linear-gradient(to_right,#6366f1_var(--pct),rgba(255,255,255,0.08)_var(--pct))]
           [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
-          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
-          [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-pointer
+          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-lg
           [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full
-          [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
+          [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border-0"
       />
-
       <div className="flex justify-between text-[11px] text-text-muted mt-2">
         <span>{min}{unit}</span>
-        <span className="text-[11px] text-text-muted/60">{Math.round(pct)}%</span>
+        <span className="text-text-muted/60">{Math.round(pct)}% do máx</span>
         <span>{max}{unit}</span>
       </div>
     </div>
   );
 }
 
-/* ── GPU Toggle Switch ──────────────────────────────────────────── */
+/* ── GPU Toggle ─────────────────────────────────────────────────── */
 function GpuToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
   return (
     <div className="p-4 rounded-xl bg-purple-500/5 border border-purple-500/20 flex items-center justify-between">
@@ -359,7 +406,7 @@ function GpuToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: bool
       </div>
       <button
         onClick={() => onChange(!enabled)}
-        className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${enabled ? 'bg-purple-500' : 'bg-white/10'}`}
+        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${enabled ? 'bg-purple-500' : 'bg-white/10'}`}
       >
         <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${enabled ? 'translate-x-5' : 'translate-x-0'}`} />
       </button>
@@ -368,44 +415,66 @@ function GpuToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: bool
 }
 
 const DEFAULT_POLICY: NodePolicy = {
-  maxCpuPercent:    80,
-  maxRamMb:         2048,
-  maxDiskGb:        20,
-  maxBandwidthMbps: 100,
-  scheduleStart:    '00:00',
-  scheduleEnd:      '23:59',
-  offerGpu:         false,
-  maxGpuPercent:    100,
+  maxCpuPercent: 80, maxRamMb: 2048, maxDiskGb: 20,
+  maxBandwidthMbps: 100, scheduleStart: '00:00', scheduleEnd: '23:59',
+  offerGpu: false, maxGpuPercent: 100,
 };
 
 /* ── NodePolicyPanel ────────────────────────────────────────────── */
-function NodePolicyPanel({
-  node, surgeMultiplier, onSaved,
-}: {
-  node: ProviderNode;
-  surgeMultiplier: number;
-  onSaved: () => void;
+function NodePolicyPanel({ node, surgeMultiplier, onSaved }: {
+  node: ProviderNode; surgeMultiplier: number; onSaved: () => void;
 }) {
-  const [policy, setPolicy] = useState<NodePolicy>(node.policy ?? DEFAULT_POLICY);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState('');
-  const [tab, setTab] = useState<'config' | 'telemetry'>('config');
+  const [policy, setPolicy]     = useState<NodePolicy>(node.policy ?? DEFAULT_POLICY);
+  const [saving, setSaving]     = useState(false);
+  const [saved, setSaved]       = useState(false);
+  const [error, setError]       = useState('');
+  const [tab, setTab]           = useState<'config' | 'telemetry'>('config');
+  const [caps, setCaps]         = useState<HardwareCaps | null>(null);
+  const [loadingCaps, setLoadingCaps] = useState(true);
 
+  /* Fetch historical telemetry for hardware caps on node select */
   useEffect(() => {
     setPolicy(node.policy ?? DEFAULT_POLICY);
+    setCaps(null);
+    setLoadingCaps(true);
+
+    api.get(`/v1/agent/nodes/${node.id}/telemetry`).then(res => {
+      const history: TelemetryPayload[] = res.data?.data?.telemetry ?? [];
+      if (history.length > 0) {
+        const latest = history[history.length - 1];
+        setCaps(capsFromTelemetry(latest));
+      }
+    }).catch(() => {}).finally(() => setLoadingCaps(false));
   }, [node.id]);
+
+  /* Also update caps when live telemetry arrives */
+  const handleLiveCaps = useCallback((liveCaps: HardwareCaps) => {
+    setCaps(liveCaps);
+  }, []);
 
   const set = (key: keyof NodePolicy) => (v: number | string | boolean) =>
     setPolicy(p => ({ ...p, [key]: v }));
 
-  const hasGpu = (node.gpuCount ?? 0) > 0;
-  const rank = getPowerRank(policy, hasGpu);
+  const hasGpu  = (node.gpuCount ?? 0) > 0;
+  const rank    = getPowerRank(policy, hasGpu);
   const monthly = calcMonthlyEarnings(policy, surgeMultiplier, hasGpu);
 
+  // Dynamic slider maximums — use real hardware if known, else safe defaults
+  const maxRam  = caps ? caps.ramTotalMb  : 32768;
+  const maxDisk = caps ? caps.diskTotalGb : 500;
+
+  // Snap policy value to actual hardware if it exceeds
+  useEffect(() => {
+    if (!caps) return;
+    setPolicy(p => ({
+      ...p,
+      maxRamMb:  Math.min(p.maxRamMb,  caps.ramTotalMb),
+      maxDiskGb: Math.min(p.maxDiskGb, caps.diskTotalGb),
+    }));
+  }, [caps]);
+
   const handleSave = async () => {
-    setSaving(true);
-    setError('');
+    setSaving(true); setError('');
     try {
       await api.put(`/v1/agent/nodes/${node.id}/policy`, policy);
       setSaved(true);
@@ -418,20 +487,16 @@ function NodePolicyPanel({
 
   return (
     <div className="space-y-4">
-      {/* Earnings + Rank row */}
+      {/* Earnings + Rank */}
       <div className="grid grid-cols-2 gap-3">
         <div className="p-4 rounded-xl bg-success/5 border border-success/20">
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
-            <TrendingUp className="w-3.5 h-3.5 text-success" />
-            Previsão mensal
+            <TrendingUp className="w-3.5 h-3.5 text-success" /> Previsão mensal
           </div>
-          <p className="text-[22px] font-bold text-success leading-none">
-            ${monthly.toFixed(2)}
-          </p>
+          <p className="text-[22px] font-bold text-success leading-none">${monthly.toFixed(2)}</p>
           {surgeMultiplier > 1 && (
             <p className="text-[11px] text-text-muted mt-1 flex items-center gap-1">
-              <Zap className="w-3 h-3 text-yellow-400" />
-              surge {surgeMultiplier.toFixed(1)}×
+              <Zap className="w-3 h-3 text-yellow-400" /> surge {surgeMultiplier.toFixed(1)}×
             </p>
           )}
           {hasGpu && policy.offerGpu && (
@@ -440,20 +505,14 @@ function NodePolicyPanel({
             </p>
           )}
         </div>
-
         <div className={`p-4 rounded-xl border ${rank.bg} ${rank.border}`}>
           <div className="flex items-center gap-1.5 text-[12px] text-text-muted mb-1">
-            <Award className="w-3.5 h-3.5" />
-            Power Rank
+            <Award className="w-3.5 h-3.5" /> Power Rank
           </div>
-          <p className={`text-[22px] font-bold leading-none ${rank.color}`}>
-            {rank.rank}
-          </p>
+          <p className={`text-[22px] font-bold leading-none ${rank.color}`}>{rank.rank}</p>
           <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-500 ${rank.color.replace('text-', 'bg-')}`}
-              style={{ width: `${Math.min(rank.score, 100)}%` }}
-            />
+            <div className={`h-full rounded-full transition-all duration-500 ${rank.color.replace('text-', 'bg-')}`}
+              style={{ width: `${Math.min(rank.score, 100)}%` }} />
           </div>
           <p className="text-[11px] text-text-muted mt-1">{rank.score.toFixed(0)} pts</p>
         </div>
@@ -463,18 +522,40 @@ function NodePolicyPanel({
       {hasGpu && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-[12px]">
           <Zap className="w-3.5 h-3.5 shrink-0" />
-          <span><span className="font-semibold">{node.gpuModel ?? 'GPU detectada'}</span> · {node.gpuCount} GPU{(node.gpuCount ?? 0) > 1 ? 's' : ''} · {fmtMb(node.gpuMemoryMb ?? 0)} VRAM total</span>
+          <span>
+            <span className="font-semibold">{node.gpuModel ?? 'GPU detectada'}</span>
+            {' '}· {node.gpuCount} GPU{(node.gpuCount ?? 0) > 1 ? 's' : ''}
+            {' '}· {fmtMb(node.gpuMemoryMb ?? 0)} VRAM total
+          </span>
+        </div>
+      )}
+
+      {/* Hardware caps loading indicator */}
+      {loadingCaps && (
+        <div className="flex items-center gap-2 text-[12px] text-text-muted">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          Carregando especificações reais do hardware…
+        </div>
+      )}
+      {caps && (
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: `${caps.cpuCores} vCPU`, icon: <Cpu className="w-3 h-3" /> },
+            { label: fmtMb(caps.ramTotalMb),  icon: <MemoryStick className="w-3 h-3" /> },
+            { label: `${caps.diskTotalGb} GB disco`,  icon: <HardDrive className="w-3 h-3" /> },
+          ].map(({ label, icon }) => (
+            <span key={label} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-text-muted bg-white/[0.06] border border-white/[0.08]">
+              {icon}{label}
+            </span>
+          ))}
         </div>
       )}
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
         {(['config', 'telemetry'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`flex-1 py-1.5 rounded-md text-[12px] font-semibold transition-all ${tab === t ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary'}`}
-          >
+          <button key={t} onClick={() => setTab(t)}
+            className={`flex-1 py-1.5 rounded-md text-[12px] font-semibold transition-all ${tab === t ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary'}`}>
             {t === 'config' ? '⚙️ Configuração' : '📡 Telemetria Live'}
           </button>
         ))}
@@ -488,59 +569,41 @@ function NodePolicyPanel({
 
       {tab === 'config' ? (
         <>
-          {/* GPU Toggle */}
-          <GpuToggle
-            enabled={policy.offerGpu}
-            onChange={set('offerGpu') as (v: boolean) => void}
-          />
+          <GpuToggle enabled={policy.offerGpu} onChange={set('offerGpu') as (v: boolean) => void} />
 
           {policy.offerGpu && hasGpu && (
-            <PolicySlider
-              label="Uso máximo de GPU"
-              icon={<Zap className="w-3.5 h-3.5" />}
-              value={policy.maxGpuPercent}
-              min={10} max={100} step={5} unit="%"
-              onChange={set('maxGpuPercent') as (v: number) => void}
-            />
+            <PolicySlider label="Uso máximo de GPU" icon={<Zap className="w-3.5 h-3.5" />}
+              value={policy.maxGpuPercent} min={10} max={100} step={5} unit="%"
+              onChange={set('maxGpuPercent') as (v: number) => void} />
           )}
-
           {!hasGpu && policy.offerGpu && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-[12px]">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              Nenhuma GPU detectada neste nó ainda. O agente reportará GPUs quando conectado.
+              Nenhuma GPU detectada neste nó ainda.
             </div>
           )}
 
           <CardDivider />
 
-          <PolicySlider
-            label="CPU máxima"
-            icon={<Cpu className="w-3.5 h-3.5" />}
-            value={policy.maxCpuPercent}
-            min={10} max={100} step={5} unit="%"
-            onChange={set('maxCpuPercent') as (v: number) => void}
-          />
-          <PolicySlider
-            label="RAM máxima"
+          <PolicySlider label="CPU máxima" icon={<Cpu className="w-3.5 h-3.5" />}
+            value={policy.maxCpuPercent} min={10} max={100} step={5} unit="%"
+            onChange={set('maxCpuPercent') as (v: number) => void} />
+
+          <PolicySlider label={`RAM máxima${caps ? ` (de ${fmtMb(caps.ramTotalMb)})` : ''}`}
             icon={<MemoryStick className="w-3.5 h-3.5" />}
-            value={policy.maxRamMb}
-            min={256} max={32768} step={256} unit=" MB"
-            onChange={set('maxRamMb') as (v: number) => void}
-          />
-          <PolicySlider
-            label="Disco máximo"
+            value={Math.min(policy.maxRamMb, maxRam)}
+            min={256} max={maxRam} step={256} unit=" MB"
+            onChange={set('maxRamMb') as (v: number) => void} />
+
+          <PolicySlider label={`Disco máximo${caps ? ` (de ${caps.diskTotalGb} GB)` : ''}`}
             icon={<HardDrive className="w-3.5 h-3.5" />}
-            value={policy.maxDiskGb}
-            min={1} max={500} step={1} unit=" GB"
-            onChange={set('maxDiskGb') as (v: number) => void}
-          />
-          <PolicySlider
-            label="Banda máxima"
-            icon={<Wifi className="w-3.5 h-3.5" />}
-            value={policy.maxBandwidthMbps}
-            min={1} max={10000} step={1} unit=" Mbps"
-            onChange={set('maxBandwidthMbps') as (v: number) => void}
-          />
+            value={Math.min(policy.maxDiskGb, maxDisk)}
+            min={1} max={maxDisk} step={1} unit=" GB"
+            onChange={set('maxDiskGb') as (v: number) => void} />
+
+          <PolicySlider label="Banda máxima" icon={<Wifi className="w-3.5 h-3.5" />}
+            value={policy.maxBandwidthMbps} min={1} max={10000} step={1} unit=" Mbps"
+            onChange={set('maxBandwidthMbps') as (v: number) => void} />
 
           <CardDivider />
 
@@ -549,47 +612,35 @@ function NodePolicyPanel({
               <label className="flex items-center gap-1 text-[12px] font-medium text-text-secondary mb-1.5">
                 <Clock className="w-3.5 h-3.5" />Início (UTC)
               </label>
-              <input
-                type="time"
-                value={policy.scheduleStart}
+              <input type="time" value={policy.scheduleStart}
                 onChange={e => setPolicy(p => ({ ...p, scheduleStart: e.target.value }))}
-                className="input-field"
-              />
+                className="input-field" />
             </div>
             <div>
               <label className="flex items-center gap-1 text-[12px] font-medium text-text-secondary mb-1.5">
                 <Clock className="w-3.5 h-3.5" />Fim (UTC)
               </label>
-              <input
-                type="time"
-                value={policy.scheduleEnd}
+              <input type="time" value={policy.scheduleEnd}
                 onChange={e => setPolicy(p => ({ ...p, scheduleEnd: e.target.value }))}
-                className="input-field"
-              />
+                className="input-field" />
             </div>
           </div>
 
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent hover:bg-accent-light disabled:opacity-50 text-white text-sm font-semibold transition-colors"
-          >
-            {saved
-              ? <><CheckCircle className="w-4 h-4" />Salvo!</>
-              : saving
-              ? <><Loader2 className="w-4 h-4 animate-spin" />Salvando…</>
-              : <><Save className="w-4 h-4" />Salvar limites</>
-            }
+          <button onClick={handleSave} disabled={saving}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent hover:bg-accent-light disabled:opacity-50 text-white text-sm font-semibold transition-colors">
+            {saved    ? <><CheckCircle className="w-4 h-4" />Salvo!</>
+            : saving  ? <><Loader2 className="w-4 h-4 animate-spin" />Salvando…</>
+            :            <><Save className="w-4 h-4" />Salvar limites</>}
           </button>
         </>
       ) : (
-        <LiveTelemetryPanel nodeId={node.id} />
+        <LiveTelemetryPanel nodeId={node.id} onHardwareCaps={handleLiveCaps} />
       )}
     </div>
   );
 }
 
-/* ── Power Rank Badge (for node card) ─────────────────────────────── */
+/* ── PowerRankBadge ──────────────────────────────────────────────── */
 function PowerRankBadge({ policy, gpuCount }: { policy?: NodePolicy | null; gpuCount?: number }) {
   if (!policy) return null;
   const { rank, color, bg, border } = getPowerRank(policy, (gpuCount ?? 0) > 0);
@@ -602,10 +653,10 @@ function PowerRankBadge({ policy, gpuCount }: { policy?: NodePolicy | null; gpuC
 
 /* ── Page ──────────────────────────────────────────────────────────── */
 export default function ProviderPage() {
-  const [nodes, setNodes] = useState<ProviderNode[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [surgeMultiplier, setSurgeMultiplier] = useState(1.0);
+  const [nodes, setNodes]           = useState<ProviderNode[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [selected, setSelected]     = useState<string | null>(null);
+  const [surgeMultiplier, setSurge] = useState(1.0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -617,7 +668,7 @@ export default function ProviderPage() {
       if (nodesRes.status === 'fulfilled') setNodes(nodesRes.value.data.data.nodes);
       if (demandRes.status === 'fulfilled') {
         const ratio = demandRes.value.data.data.demandRatio as number;
-        setSurgeMultiplier(Math.min(Math.max(1 + (ratio - 1) * 0.5, 1), 3));
+        setSurge(Math.min(Math.max(1 + (ratio - 1) * 0.5, 1), 3));
       }
     } catch { setNodes([]); }
     finally { setLoading(false); }
@@ -629,7 +680,6 @@ export default function ProviderPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -653,29 +703,23 @@ export default function ProviderPage() {
         <Card className="text-center py-20" padding="none">
           <Server className="w-10 h-10 text-text-muted mx-auto mb-4" />
           <p className="text-[14px] font-semibold text-text-primary mb-1">Nenhum nó registrado</p>
-          <p className="text-[13px] text-text-secondary">Registre um nó em Cloud → Agentes para começar a ganhar.</p>
+          <p className="text-[13px] text-text-secondary">Registre um nó em Cloud → Agentes para começar.</p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Node list */}
           <div className="space-y-2">
             {nodes.map(node => (
-              <Card
-                key={node.id}
-                hoverable
-                onClick={() => setSelected(node.id)}
+              <Card key={node.id} hoverable onClick={() => setSelected(node.id)}
                 className={`transition-all ${selected === node.id ? 'border-accent/40 bg-accent/5' : ''}`}
-                padding="md"
-              >
+                padding="md">
                 <div className="flex items-start gap-3">
                   <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${node.status === 'ONLINE' ? 'bg-success animate-pulse-status' : 'bg-text-muted'}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-[14px] font-semibold text-text-primary truncate">{node.name}</p>
                     <p className="text-[12px] text-text-muted">{node.city ?? node.country ?? 'Local desconhecido'}</p>
                     <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <span className={`badge ${node.status === 'ONLINE' ? 'badge-success' : 'badge-neutral'}`}>
-                        {node.status}
-                      </span>
+                      <span className={`badge ${node.status === 'ONLINE' ? 'badge-success' : 'badge-neutral'}`}>{node.status}</span>
                       <PowerRankBadge policy={node.policy} gpuCount={node.gpuCount} />
                       {(node.gpuCount ?? 0) > 0 && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-purple-500/10 border-purple-500/30 text-purple-300">
@@ -704,16 +748,12 @@ export default function ProviderPage() {
             {selectedNode ? (
               <Card>
                 <CardHeader
-                  title={`${selectedNode.name}`}
+                  title={selectedNode.name}
                   description={`${selectedNode.ipAddress ?? 'IP não disponível'} · ${selectedNode.city ?? ''} ${selectedNode.country ?? ''}`}
                   icon={<Server className="w-4 h-4" />}
                 />
                 <CardDivider />
-                <NodePolicyPanel
-                  node={selectedNode}
-                  surgeMultiplier={surgeMultiplier}
-                  onSaved={load}
-                />
+                <NodePolicyPanel node={selectedNode} surgeMultiplier={surgeMultiplier} onSaved={load} />
               </Card>
             ) : (
               <Card className="flex items-center justify-center h-full min-h-[320px] text-center" padding="none">
