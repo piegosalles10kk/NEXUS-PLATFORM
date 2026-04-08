@@ -6,10 +6,10 @@ WORKDIR /app
 # Instala dependências de build
 RUN apk add --no-cache git
 
-COPY go.mod go.sum ./
+COPY agent/go.mod agent/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY agent/ .
 
 # Build para Linux amd64 (target principal dos nós doadores)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
