@@ -742,7 +742,7 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				},
 			})
 			select {
-			case outCh <- payload:
+			case out <- payload:
 			case <-ctx.Done():
 			}
 		}()
