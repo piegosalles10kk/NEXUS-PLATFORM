@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { ProtectedRoute, RoleGuard } from './guards/Guards';
 import AppLayout from './components/layout/AppLayout';
+
+// Existing pages
 import LoginPage from './pages/LoginPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
@@ -14,112 +16,91 @@ import CloudPage from './pages/CloudPage';
 import ServerDetailsPage from './pages/ServerDetailsPage';
 import ProjectsPage from './pages/ProjectsPage';
 
+// New DePIN / Billing / Provider pages
+import DePINAppsPage from './pages/DePINAppsPage';
+import DePINClusterView from './pages/DePINClusterView';
+import BillingPage from './pages/BillingPage';
+import ProviderPage from './pages/ProviderPage';
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Public routes */}
-          <Route path="/login" element={<LoginPage />} />
+          {/* ── Public ─────────────────────────────────────────────────── */}
+          <Route path="/login"           element={<LoginPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/reset-password"  element={<ResetPasswordPage />} />
 
-          {/* Protected routes */}
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
-                  <DashboardPage />
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/projects"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
-                  <ProjectsPage />
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/project/:id"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
-                  <ProjectPage />
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/users"
-            element={
-              <ProtectedRoute>
-                <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                  <AppLayout>
-                    <AdminUsersPage />
-                  </AppLayout>
-                </RoleGuard>
-              </ProtectedRoute>
-            }
-          />
+          {/* ── Protected — CI/CD ──────────────────────────────────────── */}
+          <Route path="/dashboard" element={
+            <ProtectedRoute><AppLayout><DashboardPage /></AppLayout></ProtectedRoute>
+          } />
+          <Route path="/projects" element={
+            <ProtectedRoute><AppLayout><ProjectsPage /></AppLayout></ProtectedRoute>
+          } />
+          <Route path="/project/:id" element={
+            <ProtectedRoute><AppLayout><ProjectPage /></AppLayout></ProtectedRoute>
+          } />
 
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                  <AppLayout>
-                    <SettingsPage />
-                  </AppLayout>
-                </RoleGuard>
-              </ProtectedRoute>
-            }
-          />
+          {/* ── Protected — DePIN ──────────────────────────────────────── */}
+          <Route path="/depin" element={
+            <ProtectedRoute><AppLayout><DePINAppsPage /></AppLayout></ProtectedRoute>
+          } />
+          <Route path="/depin/:id" element={
+            <ProtectedRoute><AppLayout><DePINClusterView /></AppLayout></ProtectedRoute>
+          } />
 
-          <Route
-            path="/gateway"
-            element={
-              <ProtectedRoute>
-                <RoleGuard allowedRoles={['ADM', 'TECNICO']} fallback={<Navigate to="/dashboard" replace />}>
-                  <AppLayout>
-                    <GatewayPage />
-                  </AppLayout>
-                </RoleGuard>
-              </ProtectedRoute>
-            }
-          />
+          {/* ── Protected — Financeiro ─────────────────────────────────── */}
+          <Route path="/billing" element={
+            <ProtectedRoute><AppLayout><BillingPage /></AppLayout></ProtectedRoute>
+          } />
 
-          <Route
-            path="/cloud"
-            element={
-              <ProtectedRoute>
-                <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                  <AppLayout>
-                    <CloudPage />
-                  </AppLayout>
-                </RoleGuard>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/cloud/servers/:id"
-            element={
-              <ProtectedRoute>
-                <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                  <AppLayout>
-                    <ServerDetailsPage />
-                  </AppLayout>
-                </RoleGuard>
-              </ProtectedRoute>
-            }
-          />
+          {/* ── Protected — Provedor de Hardware ──────────────────────── */}
+          <Route path="/provider" element={
+            <ProtectedRoute><AppLayout><ProviderPage /></AppLayout></ProtectedRoute>
+          } />
 
-          {/* Default redirect */}
+          {/* ── Protected — ADM / TECNICO ──────────────────────────────── */}
+          <Route path="/gateway" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM', 'TECNICO']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><GatewayPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+
+          {/* ── Protected — ADM only ────────────────────────────────────── */}
+          <Route path="/cloud" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><CloudPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+          <Route path="/cloud/servers/:id" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><ServerDetailsPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/users" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><AdminUsersPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+          <Route path="/settings" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><SettingsPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+
+          {/* ── Default redirect ────────────────────────────────────────── */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>

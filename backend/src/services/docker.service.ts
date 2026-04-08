@@ -34,6 +34,8 @@ export interface ContainerOptions {
   env?: string[];
   network?: string;
   labels?: Record<string, string>;
+  /** When true, injects the NVIDIA runtime device (equivalent to --gpus all). */
+  requireGpu?: boolean;
 }
 
 export async function checkDockerConnection(): Promise<boolean> {
@@ -80,7 +82,7 @@ export async function buildImage(options: BuildImageOptions): Promise<string> {
 }
 
 export async function createAndStartContainer(options: ContainerOptions): Promise<Docker.Container> {
-  const { name, image, ports = {}, env = [], network, labels = {} } = options;
+  const { name, image, ports = {}, env = [], network, labels = {}, requireGpu = false } = options;
 
   // Build port bindings
   const exposedPorts: Record<string, {}> = {};
@@ -92,6 +94,13 @@ export async function createAndStartContainer(options: ContainerOptions): Promis
     portBindings[portKey] = [{ HostPort: hostPort }];
   }
 
+  // Build GPU device requests when requireGpu is true.
+  // DeviceRequests is the Dockerode representation of --gpus all:
+  //   Driver: 'nvidia', Count: -1 (meaning "all"), Capabilities: [['gpu']]
+  const deviceRequests: Docker.DeviceRequest[] = requireGpu
+    ? [{ Driver: 'nvidia', Count: -1, DeviceIDs: [], Capabilities: [['gpu']], Options: {} }]
+    : [];
+
   const container = await docker.createContainer({
     Image: image,
     name,
@@ -101,6 +110,7 @@ export async function createAndStartContainer(options: ContainerOptions): Promis
     HostConfig: {
       PortBindings: portBindings,
       ...(network && { NetworkMode: network }),
+      ...(deviceRequests.length > 0 && { DeviceRequests: deviceRequests }),
     },
   });
 

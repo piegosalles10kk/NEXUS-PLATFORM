@@ -20,6 +20,9 @@
       "Bash(powershell.exe -Command 'try { $c = New-Object Net.Sockets.TcpClient\\('\\\\''127.0.0.1'\\\\'', 54342\\); Write-Host '\\\\''CONNECTED port 54342'\\\\''; $c.Close\\(\\) } catch { Write-Host '\\\\''FAILED:'\\\\'' $_.Exception.Message }')",
       "Bash(powershell.exe -Command \"\\(New-Object Net.Sockets.TcpClient\\('127.0.0.1', 54342\\)\\).Connected\")",
       "Bash(netstat -ano)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\piego\\.claude\\projects\\c--Users-piego-Desktop-Projeto-Nexus-Nexus-Deployment-Plataform-main\\memory"
     ]
   }
 }

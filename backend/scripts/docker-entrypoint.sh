@@ -1,18 +1,26 @@
 #!/bin/sh
+set -e
 
-# Aguarda o banco de dados estar pronto
+# ── Espera o banco de dados aceitar conexões ────────────────────────────────
+# O healthcheck do compose já garante isso antes do container subir,
+# mas mantemos um fallback aqui para uso sem compose (ci, docker run manual).
 echo "Waiting for database to be ready..."
-sleep 5
+until pg_isready -h "$(echo "$DATABASE_URL" | sed 's|.*@||' | sed 's|/.*||' | sed 's|:.*||')" -p 5432 2>/dev/null; do
+  printf '.'
+  sleep 1
+done
+echo " database is ready."
 
-# Sincroniza o schema com o banco de dados (cria tabelas se não existirem)
-# db push é idempotente — seguro para rodar em todo restart
+# ── Sincroniza o schema ─────────────────────────────────────────────────────
+# db push é idempotente — cria tabelas novas, não destrói existentes
 echo "Syncing database schema..."
 npx prisma db push --accept-data-loss
 
-# Roda o seed apenas se necessário (seed é idempotente — verifica se admin já existe)
+# ── Seed do admin inicial ───────────────────────────────────────────────────
+# Seed idempotente — verifica se o admin já existe antes de inserir
 echo "Seeding initial admin account..."
 npx prisma db seed
 
-# Inicia a aplicação
-echo "Starting application..."
+# ── Inicia a aplicação ──────────────────────────────────────────────────────
+echo "Starting Nexus backend..."
 exec node dist/server.js

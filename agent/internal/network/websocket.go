@@ -19,6 +19,7 @@ import (
 	"github.com/10kk/agent/internal/docker"
 	agentfs "github.com/10kk/agent/internal/fs"
 	"github.com/10kk/agent/internal/metrics"
+	"github.com/10kk/agent/internal/policy"
 	"github.com/10kk/agent/internal/telemetry"
 	"github.com/10kk/agent/internal/updater"
 	agentvm "github.com/10kk/agent/internal/vm"
@@ -68,6 +69,8 @@ type inboundMsg struct {
 	DestPath    string `json:"destPath,omitempty"`
 	FileContent string `json:"fileContent,omitempty"`
 	Clean       bool   `json:"clean,omitempty"`
+	// RequireGPU: when true the agent will add --gpus all to the docker run command
+	RequireGPU  bool   `json:"requireGpu,omitempty"`
 	// ── DePIN fields ──────────────────────────────────────────────────────────
 	AppID     string            `json:"appId,omitempty"`
 	AppSlug   string            `json:"appSlug,omitempty"`
@@ -79,6 +82,8 @@ type inboundMsg struct {
 	// Raft clustering
 	RaftRole  string            `json:"raftRole,omitempty"`  // LEADER | FOLLOWER
 	RaftPeers []string          `json:"raftPeers,omitempty"` // peer IP addresses
+	// Policy hot-reload
+	Policy *policy.NodePolicy `json:"policy,omitempty"`
 }
 
 // RunConnectionLoop dials the master and re-dials on any disconnect.
@@ -424,6 +429,7 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				HealthCheckURL:   msg.HealthCheckURL,
 				HealthCheckDelay: msg.HealthCheckDelay,
 				Clean:            msg.Clean,
+				RequireGPU:       msg.RequireGPU,
 			}
 
 			result := docker.RunDeploy(ctx, req, logFn)
@@ -686,6 +692,15 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				}
 			}
 		}()
+
+	// ── Policy hot-reload — reconfigure cgroups/Job Objects without restart ──────
+	case "update_policy":
+		if msg.Policy != nil {
+			p := *msg.Policy
+			policy.SetGlobal(p)
+			log.Printf("[policy] hot-reload applied: CPU=%.0f%% RAM=%dMB bandwidth=%dMbps",
+				p.MaxCPUPercent, p.MaxRAMMb, p.MaxBandwidthMbps)
+		}
 
 	case "terminate":
 		go func() {

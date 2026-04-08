@@ -50,6 +50,7 @@ model User {
   updatedAt    DateTime          @updatedAt @map("updated_at")
   deploys      DeployHistory[]
   widgets      DashboardWidget[]
+  wallet       Wallet?
 
   @@map("users")
 }
@@ -93,6 +94,7 @@ model Project {
   cloudServer       CloudServer?         @relation(fields: [cloudServerId], references: [id], onDelete: SetNull)
   nodeId            String?              @map("node_id")
   node              Node?                @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  requireGpu        Boolean              @default(false) @map("require_gpu")
   secrets           ProjectSecret[]
   deploys           DeployHistory[]
   steps             WorkflowStep[]
@@ -215,20 +217,26 @@ enum NodeStatus {
 }
 
 model Node {
-  id          String           @id @default(uuid())
-  name        String
-  os          String
-  arch        String
-  token       String           @unique
-  status      NodeStatus       @default(OFFLINE)
-  version     String           @default("v1.0.0")
-  ipAddress   String?          @map("ip_address")
-  country     String?          // ISO-3166-1 alpha-2, e.g. "BR"
-  city        String?
-  lastPing    DateTime         @updatedAt @map("last_ping")
-  createdAt   DateTime         @default(now()) @map("created_at")
-  projects    Project[]
-  assignments NodeAssignment[]
+  id            String           @id @default(uuid())
+  name          String
+  os            String
+  arch          String
+  token         String           @unique
+  status        NodeStatus       @default(OFFLINE)
+  version       String           @default("v1.0.0")
+  ipAddress     String?          @map("ip_address")
+  country       String?          // ISO-3166-1 alpha-2, e.g. "BR"
+  state         String?
+  city          String?
+  // GPU hardware capability (null = CPU-only node)
+  gpuModel      String?          @map("gpu_model")
+  gpuMemoryMb   Int?             @map("gpu_memory_mb")
+  gpuCount      Int              @default(0) @map("gpu_count")
+  lastPing      DateTime         @updatedAt @map("last_ping")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  projects      Project[]
+  assignments   NodeAssignment[]
+  policy        NodePolicy?
 
   @@map("nodes")
 }
@@ -260,20 +268,30 @@ enum AssignmentStatus {
   MIGRATING
 }
 
+enum SslStatus {
+  PENDING
+  ACTIVE
+  FAILED
+}
+
 model DePINApp {
-  id            String           @id @default(uuid())
-  name          String
-  slug          String           @unique
-  executionMode ExecutionMode    @map("execution_mode")
-  status        DePINAppStatus   @default(PENDING)
-  replicaCount  Int              @default(3) @map("replica_count")
-  imageRef      String?          @map("image_ref")
-  envVars       Json?            @map("env_vars")
-  port          Int?
-  region        String?
-  assignments   NodeAssignment[]
-  createdAt     DateTime         @default(now()) @map("created_at")
-  updatedAt     DateTime         @updatedAt @map("updated_at")
+  id             String           @id @default(uuid())
+  name           String
+  slug           String           @unique
+  executionMode  ExecutionMode    @map("execution_mode")
+  status         DePINAppStatus   @default(PENDING)
+  replicaCount   Int              @default(3) @map("replica_count")
+  imageRef       String?          @map("image_ref")
+  envVars        Json?            @map("env_vars")
+  port           Int?
+  region         String?
+  customDomain   String?          @unique @map("custom_domain")
+  sslStatus      SslStatus?       @map("ssl_status")
+  priceMultiplier Float           @default(1.0) @map("price_multiplier")
+  assignments    NodeAssignment[]
+  usageRecords   UsageRecord[]
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
 
   @@map("depin_apps")
 }
@@ -298,18 +316,95 @@ model NodeAssignment {
 model UsageRecord {
   id          String   @id @default(uuid())
   appId       String   @map("app_id")
+  app         DePINApp @relation(fields: [appId], references: [id], onDelete: Cascade)
   nodeId      String   @map("node_id")
   windowStart DateTime @map("window_start")
   windowEnd   DateTime @map("window_end")
-  cpuMs       BigInt   @default(0) @map("cpu_ms")        // CPU milliseconds consumed
-  ramMbS      BigInt   @default(0) @map("ram_mb_s")      // RAM MB·seconds consumed
+  cpuMs       BigInt   @default(0) @map("cpu_ms")
+  ramMbS      BigInt   @default(0) @map("ram_mb_s")
   netRxBytes  BigInt   @default(0) @map("net_rx_bytes")
   netTxBytes  BigInt   @default(0) @map("net_tx_bytes")
+  billedUsd   Float    @default(0) @map("billed_usd")
   createdAt   DateTime @default(now()) @map("created_at")
 
   @@index([appId, windowStart])
   @@index([nodeId, windowStart])
   @@map("usage_records")
+}
+
+// ─── Wallet / Ledger ──────────────────────────────────────────────────────────
+
+enum TxType {
+  EARN
+  SPEND
+  DEPOSIT
+  WITHDRAW
+}
+
+enum PayoutStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+model Wallet {
+  id           String             @id @default(uuid())
+  userId       String             @unique @map("user_id")
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balanceUsd   Float              @default(0) @map("balance_usd")
+  earnedUsd    Float              @default(0) @map("earned_usd")   // lifetime Provider earnings
+  spentUsd     Float              @default(0) @map("spent_usd")    // lifetime Consumer spend
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  transactions LedgerTransaction[]
+  payouts      PayoutRequest[]
+
+  @@map("wallets")
+}
+
+model LedgerTransaction {
+  id          String   @id @default(uuid())
+  walletId    String   @map("wallet_id")
+  wallet      Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type        TxType
+  amountUsd   Float    @map("amount_usd")
+  description String?  @db.Text
+  metadata    Json?    // { appId, nodeId, windowStart, priceMultiplier }
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([walletId, createdAt])
+  @@map("ledger_transactions")
+}
+
+model PayoutRequest {
+  id          String       @id @default(uuid())
+  walletId    String       @map("wallet_id")
+  wallet      Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  amountUsd   Float        @map("amount_usd")
+  status      PayoutStatus @default(PENDING)
+  pixKey      String?      @map("pix_key")
+  notes       String?      @db.Text
+  resolvedAt  DateTime?    @map("resolved_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@map("payout_requests")
+}
+
+// ─── Node Policy (Hardware Leash — Sprint 4) ──────────────────────────────────
+
+model NodePolicy {
+  id                 String   @id @default(uuid())
+  nodeId             String   @unique @map("node_id")
+  node               Node     @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  maxCpuPercent      Float    @default(80) @map("max_cpu_percent")
+  maxRamMb           Int      @default(2048) @map("max_ram_mb")
+  maxDiskGb          Int      @default(20) @map("max_disk_gb")
+  maxBandwidthMbps   Int      @default(100) @map("max_bandwidth_mbps")
+  scheduleStart      String?  @map("schedule_start")  // "08:00" UTC
+  scheduleEnd        String?  @map("schedule_end")    // "22:00" UTC
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("node_policies")
 }
 
 // ─── Cloud Module ─────────────────────────────────────────────────────────────

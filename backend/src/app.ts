@@ -151,6 +151,14 @@ export function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // ACME HTTP-01 challenge endpoint (must be before auth middleware)
+  app.get('/.well-known/acme-challenge/:token', async (req, res) => {
+    const { getChallenge } = await import('./services/acme.service');
+    const keyAuth = await getChallenge(req.params.token);
+    if (!keyAuth) { res.status(404).send('Not found'); return; }
+    res.type('text/plain').send(keyAuth);
+  });
+
   // Serve agent install script and binaries for remote VM provisioning
   const publicDir = path.join(__dirname, '..', 'public');
   app.use('/downloads', express.static(path.join(publicDir, 'downloads')));

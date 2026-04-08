@@ -267,7 +267,8 @@ async function runAutomaticDockerPipeline(
     checkCancelled(ctx);
 
     // 4. Fetch project config (proxy labels + LB + health check delay)
-    const projectData = await prisma.project.findUnique({
+    // Cast to any: Prisma client type will be updated after `prisma db push`
+    const projectData = await (prisma.project as any).findUnique({
       where: { id: ctx.projectId },
       select: {
         proxyHost: true, proxyPort: true,
@@ -275,8 +276,14 @@ async function runAutomaticDockerPipeline(
         lbHealthPath: true,
         healthCheckDelay: true,
         healthCheckUrl: true,
+        requireGpu: true,
       },
-    });
+    }) as {
+      proxyHost: string | null; proxyPort: number | null;
+      lbEnabled: boolean; lbPort: number | null; lbAppPort: number | null;
+      lbHealthPath: string; healthCheckDelay: number; healthCheckUrl: string | null;
+      requireGpu: boolean;
+    } | null;
     const healthDelay = (projectData?.healthCheckDelay ?? 15) * 1_000;
 
     // 5. Rotate tags: current → previous (before overwriting)
@@ -324,7 +331,12 @@ async function runAutomaticDockerPipeline(
       try { await stopAndRemoveContainer(imageTag); } catch { /* ignore */ }
       try {
         const rbContainer = await createAndStartContainer({
-          name: imageTag, image: `${imageTag}:previous`, env: envVars, labels: containerLabels,
+          name: imageTag,
+          image: `${imageTag}:previous`,
+          env: envVars,
+          labels: containerLabels,
+          // Rollback intentionally omits requireGpu to always succeed even
+          // when the toolkit state is unclear.
         });
         await prisma.containerInstance.deleteMany({ where: { projectId: ctx.projectId, replicaIndex: 0 } });
         await prisma.containerInstance.create({
@@ -342,7 +354,11 @@ async function runAutomaticDockerPipeline(
     let container: Awaited<ReturnType<typeof createAndStartContainer>>;
     try {
       container = await createAndStartContainer({
-        name: imageTag, image: imageTag, env: envVars, labels: containerLabels,
+        name: imageTag,
+        image: imageTag,
+        env: envVars,
+        labels: containerLabels,
+        requireGpu: projectData?.requireGpu ?? false,
       });
     } catch (deployErr: any) {
       await tryRollback(`Falha ao iniciar container: ${deployErr.message}`);
@@ -439,10 +455,22 @@ async function runRemotePipeline(ctx: PipelineContext): Promise<void> {
   const secrets = await getSecretsMap(ctx.projectId);
 
   // Fetch proxy labels + health check config
-  const projectConfig = await prisma.project.findUnique({
+  // Cast to any: Prisma client type will be updated after `prisma db push`
+  const projectConfig = await (prisma.project as any).findUnique({
     where: { id: ctx.projectId },
-    select: { proxyHost: true, proxyPort: true, healthCheckUrl: true, healthCheckDelay: true, deployTimeoutMin: true },
-  });
+    select: {
+      proxyHost: true,
+      proxyPort: true,
+      healthCheckUrl: true,
+      healthCheckDelay: true,
+      deployTimeoutMin: true,
+      requireGpu: true,
+    },
+  }) as {
+    proxyHost: string | null; proxyPort: number | null;
+    healthCheckUrl: string | null; healthCheckDelay: number;
+    deployTimeoutMin: number; requireGpu: boolean;
+  } | null;
 
   // Send deploy command (agentSocket is verified non-null above)
   const ws = agentSocket;
@@ -459,6 +487,7 @@ async function runRemotePipeline(ctx: PipelineContext): Promise<void> {
     healthCheckUrl:   projectConfig?.healthCheckUrl ?? '',
     healthCheckDelay: projectConfig?.healthCheckDelay ?? 15,
     clean:            ctx.clean ?? false,
+    requireGpu:       projectConfig?.requireGpu ?? false,
   }));
   emitLog(ctx, stepLabel, `Comando de deploy enviado ao agente ${nodeId}`, 'info');
 

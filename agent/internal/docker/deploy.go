@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/10kk/agent/internal/metrics"
 )
 
 // DeployRequest holds everything needed to perform a remote deploy.
@@ -23,6 +25,10 @@ type DeployRequest struct {
 	HealthCheckURL   string
 	HealthCheckDelay int // seconds; 0 → default 15
 	Clean            bool
+	// RequireGPU requests NVIDIA GPU passthrough for the container.
+	// The deploy will fail early when RequireGPU is true but the host
+	// does not have nvidia-container-toolkit installed.
+	RequireGPU bool
 }
 
 // DeployResult reports the outcome of a RunDeploy call.
@@ -106,7 +112,10 @@ func RunDeploy(ctx context.Context, req DeployRequest, onLog func(string)) Deplo
 	_ = runCmd(ctx, nil, "", GetExecutable("docker"), "rm", req.ImageName)
 
 	// 7. Build docker run args
-	runArgs := buildRunArgs(req, req.ImageName)
+	runArgs, err := buildRunArgs(req, req.ImageName)
+	if err != nil {
+		return DeployResult{Err: err}
+	}
 
 	onLog("▶ docker run " + req.ImageName)
 	if err := runCmd(ctx, onLog, "", GetExecutable("docker"), runArgs...); err != nil {
@@ -118,7 +127,10 @@ func RunDeploy(ctx context.Context, req DeployRequest, onLog func(string)) Deplo
 			_ = runCmd(ctx, nil, "", GetExecutable("docker"), "stop", req.ImageName)
 			_ = runCmd(ctx, nil, "", GetExecutable("docker"), "rm", req.ImageName)
 
-			rbArgs := buildRunArgs(req, req.ImageName+":previous")
+			// Rollback does not require GPU — use the previous image without GPU flag
+			rbReq := req
+			rbReq.RequireGPU = false
+			rbArgs, _ := buildRunArgs(rbReq, req.ImageName+":previous")
 			if rbErr := runCmd(ctx, onLog, "", GetExecutable("docker"), rbArgs...); rbErr == nil {
 				onLog("✓ rollback concluído — versão anterior restaurada")
 				return DeployResult{
@@ -159,7 +171,10 @@ func RunDeploy(ctx context.Context, req DeployRequest, onLog func(string)) Deplo
 			onLog("▶ iniciando rollback para " + req.ImageName + ":previous…")
 			_ = runCmd(ctx, nil, "", GetExecutable("docker"), "stop", req.ImageName)
 			_ = runCmd(ctx, nil, "", GetExecutable("docker"), "rm", req.ImageName)
-			rbArgs := buildRunArgs(req, req.ImageName+":previous")
+			// Rollback does not require GPU — restore previous image safely
+			rbReq := req
+			rbReq.RequireGPU = false
+			rbArgs, _ := buildRunArgs(rbReq, req.ImageName+":previous")
 			if rbErr := runCmd(ctx, onLog, "", GetExecutable("docker"), rbArgs...); rbErr == nil {
 				onLog("✓ rollback concluído — versão anterior restaurada")
 				return DeployResult{
@@ -180,8 +195,26 @@ func RunDeploy(ctx context.Context, req DeployRequest, onLog func(string)) Deplo
 }
 
 // buildRunArgs assembles the `docker run` argument list for the given image.
-func buildRunArgs(req DeployRequest, image string) []string {
+// It performs a GPU pre-flight check when req.RequireGPU is set.
+func buildRunArgs(req DeployRequest, image string) ([]string, error) {
+	// GPU pre-flight check: ensure the NVIDIA container toolkit is available
+	// before we attempt to launch the container with --gpus all.
+	if req.RequireGPU {
+		if !metrics.HasNvidiaToolkit() {
+			return nil, fmt.Errorf(
+				"deploy aborted: workload requires GPU but nvidia-container-toolkit " +
+					"is not installed on this node (install with: " +
+					"apt-get install -y nvidia-container-toolkit && systemctl restart docker)",
+			)
+		}
+	}
+
 	args := []string{"run", "-d", "--name", req.ImageName, "--restart", "unless-stopped"}
+
+	// Inject the NVIDIA runtime so the container can access all GPUs.
+	if req.RequireGPU {
+		args = append(args, "--gpus", "all")
+	}
 
 	for k, v := range req.EnvVars {
 		args = append(args, "-e", k+"="+v)
@@ -194,7 +227,7 @@ func buildRunArgs(req DeployRequest, image string) []string {
 		)
 	}
 
-	return append(args, image)
+	return append(args, image), nil
 }
 
 // runCmd runs an OS command, streaming each output line to onLog (if non-nil).

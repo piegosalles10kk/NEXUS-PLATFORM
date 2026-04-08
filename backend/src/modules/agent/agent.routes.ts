@@ -18,6 +18,10 @@ router.get(   '/nodes/:id/telemetry', authenticate, authorize('ADM'), agentContr
 router.get(   '/nodes/:id/scan-ports', authenticate, authorize('ADM', 'TECNICO'), agentController.scanNodePorts);
 router.post(  '/nodes/:id/terminate',  authenticate, authorize('ADM'), agentController.terminateNodeAgent);
 
+// ── Node Policy (Hardware Leash) ──────────────────────────────────────────────
+router.put('/nodes/:id/policy', authenticate, authorize('ADM'), agentController.upsertNodePolicy);
+router.get('/nodes/:id/policy', authenticate, authorize('ADM'), agentController.getNodePolicy);
+
 // ── File Manager (Global FTP) ───────────────────────────────────────────────────
 router.get(   '/nodes/:id/files',       authenticate, authorize('ADM', 'TECNICO'), agentController.listNodeFiles);
 router.get(   '/nodes/:id/files/read',  authenticate, authorize('ADM', 'TECNICO'), agentController.readNodeFile);

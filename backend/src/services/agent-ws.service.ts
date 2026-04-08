@@ -347,7 +347,7 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
       return;
     }
 
-    // 3. Update node status in DB
+    // 3. Update node status in DB + geo-enrich IP asynchronously
     const remoteIp = req.socket.remoteAddress ?? undefined;
     const agentOs = (req.headers['x-agent-os'] as string) || undefined;
     const agentVersion = (req.headers['x-agent-version'] as string) || undefined;
@@ -361,6 +361,19 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
         version: agentVersion
       },
     }).catch(console.error);
+
+    // Geo-enrich in background (non-blocking)
+    if (remoteIp) {
+      import('./geo.service').then(({ lookupIp }) =>
+        lookupIp(remoteIp).then(geo => {
+          if (!geo) return;
+          prisma.node.update({
+            where: { id: nodeId },
+            data: { country: geo.country, state: geo.state, city: geo.city },
+          }).catch(console.error);
+        })
+      ).catch(() => {});
+    }
 
     agentSockets.set(nodeId, ws);
     console.log(`🤝 Agent connected: nodeId=${nodeId} ip=${remoteIp}`);
@@ -395,6 +408,19 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
           }).catch(err => {
             console.error(`[redis] connection failed for nodeId=${nodeId}:`, err);
           });
+
+          // Persist GPU info to DB if the agent reported GPUs
+          if (Array.isArray(msg.payload?.gpus) && msg.payload.gpus.length > 0) {
+            const gpus: Array<{ name: string; memory_total_mb: number }> = msg.payload.gpus;
+            // Use the first GPU's name + sum total memory across all GPUs
+            const gpuModel     = gpus[0].name ?? null;
+            const gpuMemoryMb  = gpus.reduce((sum, g) => sum + (g.memory_total_mb ?? 0), 0);
+            const gpuCount     = gpus.length;
+            prisma.node.update({
+              where: { id: nodeId },
+              data: { gpuModel, gpuMemoryMb, gpuCount },
+            }).catch(console.error);
+          }
 
           // Broadcast to connected web clients
           io.emit('node:telemetry', { nodeId, data: msg.payload });

@@ -32,8 +32,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install Docker CLI, Git, Terraform and OpenSSL
-RUN apk add --no-cache docker-cli git curl unzip openssl && \
+# Install Docker CLI, Git, Terraform, OpenSSL and Postgres client (pg_isready for healthcheck)
+RUN apk add --no-cache docker-cli git curl unzip openssl postgresql-client && \
     curl -sSL --max-time 120 --retry 3 --retry-delay 5 \
         https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip \
         -o terraform.zip && \

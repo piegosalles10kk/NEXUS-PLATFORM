@@ -21,6 +21,8 @@ type HostMetrics struct {
 	DiskTotal   uint64  `json:"disk_total"`
 	DiskUsed    uint64  `json:"disk_used"`
 	DiskPercent float64 `json:"disk_percent"`
+	// GPU information (empty slice on CPU-only hosts)
+	GPUs        []GPUInfo `json:"gpus"`
 }
 
 // StartBroadcaster collects host metrics every 10 s and sends them to ch.
@@ -75,6 +77,9 @@ func collect() (HostMetrics, error) {
 		}
 	}
 
+	// GPU — non-fatal; returns empty slice on CPU-only hosts
+	gpus := collectGPUs()
+
 	return HostMetrics{
 		CPUPercent:  cpuPct,
 		MemTotal:    vmStat.Total,
@@ -83,5 +88,6 @@ func collect() (HostMetrics, error) {
 		DiskTotal:   diskStat.Total,
 		DiskUsed:    diskStat.Used,
 		DiskPercent: diskStat.UsedPercent,
+		GPUs:        gpus,
 	}, nil
 }

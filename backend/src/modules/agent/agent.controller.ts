@@ -198,6 +198,47 @@ export async function scanNodePorts(req: Request<{ id: string }>, res: Response,
   }
 }
 
+// ── PUT /api/v1/agent/nodes/:id/policy ──────────────────────────────────────
+export async function upsertNodePolicy(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const {
+      maxCpuPercent = 80,
+      maxRamMb = 2048,
+      maxDiskGb = 20,
+      maxBandwidthMbps = 100,
+      scheduleStart = '00:00',
+      scheduleEnd = '23:59',
+    } = req.body;
+
+    const policy = await prisma.nodePolicy.upsert({
+      where: { nodeId: id },
+      create: { nodeId: id, maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
+      update: { maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
+    });
+
+    // Push update to the agent over WS so it reconfigures cgroups immediately
+    const ws = getAgentSocket(id);
+    if (ws && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'update_policy',
+        policy: { maxCpuPercent, maxRamMb, maxDiskGb, maxBandwidthMbps, scheduleStart, scheduleEnd },
+      }));
+    }
+
+    res.json({ status: 'success', data: policy });
+  } catch (error) { next(error); }
+}
+
+// ── GET /api/v1/agent/nodes/:id/policy ──────────────────────────────────────
+export async function getNodePolicy(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const policy = await prisma.nodePolicy.findUnique({ where: { nodeId: id } });
+    res.json({ status: 'success', data: policy });
+  } catch (error) { next(error); }
+}
+
 // ── POST /api/v1/agent/nodes/:id/terminate ──────────────────────────────────
 export async function terminateNodeAgent(req: Request<{ id: string }>, res: Response, next: NextFunction) {
   try {

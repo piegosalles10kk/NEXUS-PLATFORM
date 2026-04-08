@@ -1,4 +1,7 @@
 services:
+  # ── Docker Socket Proxy ─────────────────────────────────────────────────────
+  # Expõe a API do Docker Engine de forma segura para o backend sem precisar
+  # montar o socket diretamente (evita escalada de privilégios).
   docker-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: 10kk-docker-proxy
@@ -27,6 +30,7 @@ services:
     networks:
       - 10kk-proxy-net
 
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   cicd-postgres:
     image: postgres:16-alpine
     container_name: 10kk-postgres
@@ -39,18 +43,31 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - 10kk-network
 
+  # ── Redis ───────────────────────────────────────────────────────────────────
   cicd-redis:
     image: redis:7-alpine
     container_name: 10kk-redis
     restart: always
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - 10kk-network
 
+  # ── Backend (API + Agent WebSocket) ────────────────────────────────────────
   cicd-backend:
     build:
       context: .
@@ -63,14 +80,22 @@ services:
     env_file:
       - .env
     environment:
+      # Sobrescreve DATABASE_URL para apontar ao nome do container na rede interna
+      # O .env pode usar localhost para desenvolvimento fora do Docker
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@10kk-postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://10kk-redis:6379
+      # Informa o Docker Socket Proxy para criação de containers (ex: deploys locais)
+      - DOCKER_PROXY_HOST=tcp://10kk-docker-proxy:2375
       - GATEWAY_CONF_PATH=/shared/gateway.conf
-      - DOCKER_HOST=tcp://10kk-docker-proxy:2375
     volumes:
       - gateway_conf:/shared
     depends_on:
-      - cicd-postgres
-      - cicd-redis
-      - docker-proxy
+      cicd-postgres:
+        condition: service_healthy
+      cicd-redis:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -78,6 +103,7 @@ services:
       - 10kk-lb-net
       - 10kk-proxy-net
 
+  # ── Frontend (Nginx + Vite build) ──────────────────────────────────────────
   cicd-frontend:
     build:
       context: ./frontend
@@ -95,6 +121,43 @@ services:
     networks:
       - 10kk-network
 
+  # ── Nexus Agent (nó de exemplo local) ──────────────────────────────────────
+  # Remove ou comente este serviço se você quiser rodar agentes apenas em
+  # máquinas remotas. Este é um agente de exemplo para testes locais.
+  nexus-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    container_name: 10kk-agent-local
+    restart: unless-stopped
+    environment:
+      # Conecta ao backend via rede interna do Docker
+      - MASTER_URL=ws://10kk-backend:8443/agent-ws
+      # Token de exemplo — substitua por um token gerado no dashboard
+      - AGENT_TOKEN=${AGENT_TOKEN:-local-dev-agent-token}
+      # Permite que o agente execute docker dentro do container (via proxy)
+      - DOCKER_HOST=tcp://10kk-docker-proxy:2375
+    volumes:
+      # Permite ao agente clonar repos e construir imagens
+      - agent_projects:/app/projects
+    depends_on:
+      - cicd-backend
+      - docker-proxy
+    networks:
+      - 10kk-network
+      - 10kk-proxy-net
+    # ── NVIDIA GPU Support (opcional) ────────────────────────────────────────
+    # Descomente o bloco abaixo se este host tiver GPUs NVIDIA e o
+    # nvidia-container-toolkit estiver instalado:
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
 networks:
   10kk-network:
     driver: bridge
@@ -106,3 +169,4 @@ networks:
 volumes:
   postgres_data:
   gateway_conf:
+  agent_projects:

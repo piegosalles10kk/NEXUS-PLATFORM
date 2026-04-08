@@ -12,6 +12,7 @@
 import prisma from '../config/database';
 import { getRedisClient } from '../config/redis';
 import { getAgentSocket } from './agent-ws.service';
+import { consolidateDailyUsage } from './wallet.service';
 
 export interface NodeCandidate {
   id: string;
@@ -23,12 +24,17 @@ export interface NodeCandidate {
   memPercent: number;
   score: number;
   connected: boolean;
+  // GPU capability
+  gpuCount: number;
+  gpuModel: string | null;
+  gpuMemoryMb: number | null;
 }
 
 export interface SchedulerOptions {
-  count?: number;        // How many nodes to select (default 3)
-  region?: string;       // ISO-3166-1 alpha-2 country filter (optional)
+  count?: number;           // How many nodes to select (default 3)
+  region?: string;          // ISO-3166-1 alpha-2 country filter (optional)
   requireConnected?: boolean; // Only include nodes with active WS (default true)
+  requireGpu?: boolean;     // Only include nodes with at least one GPU
 }
 
 // ── Node scoring ──────────────────────────────────────────────────────────────
@@ -79,24 +85,47 @@ async function getLatestTelemetry(
  * Returns a ranked list of node candidates suitable for the workload.
  */
 export async function selectNodes(options: SchedulerOptions = {}): Promise<NodeCandidate[]> {
-  const { count = 3, region, requireConnected = true } = options;
+  const { count = 3, region, requireConnected = true, requireGpu = false } = options;
 
-  // 1. Fetch ONLINE nodes from DB (optionally filtered by country/region)
-  const nodes = await prisma.node.findMany({
+  // NodeDbRow: the subset of Node columns we need (GPU fields may not yet be
+  // present in the auto-generated PrismaClient if `prisma db push` has not been
+  // run after the schema change — the cast to `any[]` keeps TS happy until then).
+  interface NodeDbRow {
+    id: string;
+    name: string;
+    ipAddress: string | null;
+    country: string | null;
+    city: string | null;
+    gpuCount: number;
+    gpuModel: string | null;
+    gpuMemoryMb: number | null;
+  }
+
+  // 1. Fetch ONLINE nodes from DB (strictly filtered by country/region and GPU when requested)
+  const nodes = (await (prisma.node as any).findMany({
     where: {
       status: 'ONLINE',
-      ...(region ? { country: region } : {}),
+      ...(region     ? { country: region }          : {}),
+      ...(requireGpu ? { gpuCount: { gt: 0 } }      : {}),
     },
-  });
+    select: {
+      id: true, name: true, ipAddress: true,
+      country: true, city: true,
+      gpuCount: true, gpuModel: true, gpuMemoryMb: true,
+    },
+  })) as NodeDbRow[];
 
   if (nodes.length === 0) return [];
 
   // 2. Score each node using latest telemetry
   const scored = await Promise.all(
-    nodes.map(async (node: { id: string; name: string; ipAddress: string | null; country: string | null; city: string | null }) => {
+    nodes.map(async (node) => {
       const connected = getAgentSocket(node.id) !== undefined;
 
       if (requireConnected && !connected) return null;
+
+      // Double-check region at scoring stage (failsafe — DB filter already handles it)
+      if (region && node.country !== region) return null;
 
       const telemetry = await getLatestTelemetry(node.id);
       const cpuPercent = telemetry?.cpuPercent ?? 50;
@@ -112,6 +141,9 @@ export async function selectNodes(options: SchedulerOptions = {}): Promise<NodeC
         memPercent,
         score: computeScore(cpuPercent, memPercent),
         connected,
+        gpuCount: node.gpuCount,
+        gpuModel: node.gpuModel,
+        gpuMemoryMb: node.gpuMemoryMb,
       } satisfies NodeCandidate;
     }),
   );
@@ -128,11 +160,12 @@ export interface DeployAppOptions {
   name: string;
   slug: string;
   executionMode: 'WASM' | 'MICROVM' | 'AUTO';
-  imageRef?: string;  // Docker image or WASM module base64
+  imageRef?: string;     // Docker image or WASM module base64
   envVars?: Record<string, string>;
   port?: number;
-  region?: string;
+  region?: string;       // ISO-3166-1 alpha-2 — enforces geography at scheduling time
   replicaCount?: number;
+  requireGpu?: boolean;  // If true, only schedule on GPU-capable nodes
 }
 
 /**
@@ -149,20 +182,26 @@ export async function createDeployment(options: DeployAppOptions) {
     port,
     region,
     replicaCount = 3,
+    requireGpu = false,
   } = options;
 
   const resolvedMode = executionMode === 'AUTO' ? 'MICROVM' : executionMode;
 
-  // 1. Select best nodes
-  const candidates = await selectNodes({ count: replicaCount, region });
+  // 1. Select best nodes (region and GPU constraints applied here)
+  const candidates = await selectNodes({ count: replicaCount, region, requireGpu });
 
   if (candidates.length === 0) {
-    throw new Error('No available nodes to schedule the workload. Check that agents are online.');
+    const reason = requireGpu
+      ? `No GPU-capable nodes available${region ? ` in region "${region}"` : ''}.`
+      : `No available nodes${region ? ` in region "${region}"` : ''}. Check that agents are online.`;
+    throw new Error(reason);
   }
 
   if (candidates.length < replicaCount) {
     console.warn(
-      `[scheduler] Requested ${replicaCount} replicas but only ${candidates.length} nodes available.`,
+      `[scheduler] Requested ${replicaCount} replicas but only ${candidates.length} nodes available${
+        region ? ` in region "${region}"` : ''
+      }.`,
     );
   }
 
@@ -228,6 +267,75 @@ export async function listApps() {
       },
     },
   });
+}
+
+// ── Demand Ratio (Surge Pricing input) ───────────────────────────────────────
+
+const DEMAND_KEY = 'depin:demand_ratio';
+
+/**
+ * Computes and caches the DemandRatio per region.
+ * DemandRatio = activeRequests / onlineNodes (capped at 3.0)
+ * Refreshed every 30 seconds by the monitoring loop.
+ */
+export async function refreshDemandRatio(): Promise<Record<string, number>> {
+  try {
+    const redis = await getRedisClient();
+
+    // Count running assignments per country
+    const assignments = await prisma.nodeAssignment.findMany({
+      where: { status: 'RUNNING' },
+      include: { node: { select: { country: true, id: true } } },
+    });
+
+    const onlineByRegion: Record<string, number> = {};
+    const assignedByRegion: Record<string, number> = {};
+
+    for (const a of assignments) {
+      const region = a.node.country ?? 'global';
+      assignedByRegion[region] = (assignedByRegion[region] ?? 0) + 1;
+      if (getAgentSocket(a.node.id)) {
+        onlineByRegion[region] = (onlineByRegion[region] ?? 0) + 1;
+      }
+    }
+
+    const ratio: Record<string, number> = {};
+    for (const region of Object.keys(assignedByRegion)) {
+      const online = onlineByRegion[region] ?? 1;
+      const assigned = assignedByRegion[region];
+      ratio[region] = Math.min(assigned / online, 3.0);
+    }
+    ratio['global'] = ratio['global'] ?? 1.0;
+
+    await redis.set(DEMAND_KEY, JSON.stringify(ratio), { EX: 60 });
+    return ratio;
+  } catch {
+    return { global: 1.0 };
+  }
+}
+
+export async function getDemandRatio(region?: string): Promise<number> {
+  try {
+    const redis = await getRedisClient();
+    const raw = await redis.get(DEMAND_KEY);
+    if (!raw) return 1.0;
+    const ratio = JSON.parse(raw);
+    return ratio[region ?? 'global'] ?? ratio['global'] ?? 1.0;
+  } catch {
+    return 1.0;
+  }
+}
+
+// ── Daily billing cron ────────────────────────────────────────────────────────
+
+/**
+ * Must be wired to a cron job that fires at 00:00 UTC every day.
+ * Call this from your app startup / cron scheduler.
+ */
+export async function runDailyBillingCron(): Promise<void> {
+  console.log('[scheduler] Running daily billing consolidation...');
+  await consolidateDailyUsage();
+  console.log('[scheduler] Daily billing done.');
 }
 
 /**
