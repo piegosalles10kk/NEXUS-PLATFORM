@@ -13,7 +13,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Shield, AlertTriangle, Users, Wallet, Trash2, Plus, Ban,
-  CheckCircle, RefreshCw, Loader2, Lock, Activity, Eye,
+  CheckCircle, RefreshCw, Loader2, Activity, Eye,
   ChevronRight, XCircle, Terminal, Zap, Award,
 } from 'lucide-react';
 import api from '../services/api';
@@ -277,8 +277,7 @@ export default function SentinelPage() {
   const socketRef                     = useRef<Socket | null>(null);
 
   // Sprint 17.4 — Benchmark
-  const [benchNodes, setBenchNodes]   = useState<BenchmarkNode[]>([]);
-  const [benchLoading, setBenchLoad]  = useState(false);
+  const [benchNodes, setBenchNodes]     = useState<BenchmarkNode[]>([]);
   const [runningBench, setRunningBench] = useState<string | null>(null);
 
   // Sprint 17.5 — Stress test
@@ -340,9 +339,8 @@ export default function SentinelPage() {
       setLogs(prev => [...prev.slice(-499), entry]);
     });
 
-    socket.on('sentinel:benchmark_done', ({ nodeId }: { nodeId: string }) => {
+    socket.on('sentinel:benchmark_done', () => {
       setRunningBench(null);
-      // Refresh benchmark table
       api.get('/v1/admin/nodes/benchmarks').then(r => setBenchNodes(r.data.data.nodes)).catch(() => {});
     });
 

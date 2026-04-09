@@ -19,7 +19,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Cpu, MemoryStick, HardDrive, Wifi, Zap, Globe,
+  Cpu, MemoryStick, HardDrive, Wifi, Globe,
   Loader2, CheckCircle, AlertCircle, Play, Radio,
   Star, Eye, EyeOff,
 } from 'lucide-react';
@@ -105,7 +105,6 @@ function useForceGraph(nodes: FNode[], edges: FEdge[]) {
   // Sync node changes (drift-away removed, organic-join new)
   useEffect(() => {
     const prev = nodesRef.current;
-    const prevIds = new Set(prev.map(n => n.nodeId));
     const newIds  = new Set(nodes.map(n => n.nodeId));
 
     // Mark removed nodes as drifting (keep for animation)
