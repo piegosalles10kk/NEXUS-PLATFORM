@@ -131,16 +131,16 @@ export async function findBestGateway(opts: {
 
 async function getCurrentGateway(appId: string): Promise<{ nodeId: string; latencyMs: number | null } | null> {
   // The "gateway" is the node whose transitStatus = STREAMING and is assigned to this app
-  const assignment = await prisma.nodeAssignment.findFirst({
+  const assignment = await (prisma.nodeAssignment as any).findFirst({
     where: { appId, status: 'RUNNING' },
     include: { node: { select: { id: true, sonarLatencyMs: true, transitStatus: true } } },
     orderBy: { createdAt: 'asc' }, // LEADER first
-  });
+  }) as any;
 
   if (!assignment) return null;
   return {
-    nodeId:    (assignment.node as any).id,
-    latencyMs: (assignment.node as any).sonarLatencyMs ?? null,
+    nodeId:    assignment.node?.id ?? null,
+    latencyMs: assignment.node?.sonarLatencyMs ?? null,
   };
 }
 

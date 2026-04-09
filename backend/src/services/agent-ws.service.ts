@@ -29,6 +29,14 @@ import { getRedisClient } from '../config/redis';
 // Map nodeId → WebSocket, so the master can push commands to specific agents
 const agentSockets = new Map<string, WebSocket>();
 
+// Module-level Socket.io instance — stored when startAgentWsServer() is called
+let _io: SocketServer | null = null;
+
+/** Returns the Socket.io server instance (null before server starts). */
+export function getIo(): SocketServer | null {
+  return _io;
+}
+
 // ── Reverse-tunnel state ──────────────────────────────────────────────────────
 
 /** Pending tunnel proxy requests: requestId → resolve callback */
@@ -294,6 +302,7 @@ export function requestPortScan(nodeId: string): Promise<number[]> {
  * Called once from createApp() after the CA is warm.
  */
 export async function startAgentWsServer(io: SocketServer): Promise<void> {
+  _io = io; // store for getIo()
   const caCert = await getCACert();
   const caKey  = await getCAKey();
 
