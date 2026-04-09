@@ -66,10 +66,23 @@ export interface ClusterPlan {
 
 // ── Mesh IP allocator ─────────────────────────────────────────────────────────
 
-/** Returns the next available 10.50.x.y address for a cluster member. */
-function allocateMeshIps(count: number, subnet = '10.50.0'): string[] {
+/**
+ * Derives a unique /24 mesh subnet for an app using the first 4 hex chars
+ * of its UUID.  Range: 10.51.0.0/24 → 10.150.255.0/24 (25 600 unique subnets).
+ */
+function appMeshSubnet(appId: string): { subnet: string; base: string } {
+  const hex = appId.replace(/-/g, '');
+  const b2  = parseInt(hex.slice(0, 2), 16) % 100; // 0-99  → 10.(51-150).x.0/24
+  const b3  = parseInt(hex.slice(2, 4), 16);         // 0-255
+  const base   = `10.${51 + b2}.${b3}`;
+  const subnet = `${base}.0/24`;
+  return { subnet, base };
+}
+
+/** Returns mesh IP addresses for cluster members using the given base (e.g. "10.51.42"). */
+function allocateMeshIps(count: number, base: string): string[] {
   // Start at .2 — .1 is reserved for the virtual gateway
-  return Array.from({ length: count }, (_, i) => `${subnet}.${i + 2}`);
+  return Array.from({ length: count }, (_, i) => `${base}.${i + 2}`);
 }
 
 // ── Telemetry helpers ─────────────────────────────────────────────────────────
@@ -173,7 +186,8 @@ export async function planCluster(req: ClusterRequirements): Promise<ClusterPlan
 
   if (selected.length === 0) throw new Error('No suitable nodes found in any proximity tier.');
 
-  const meshIps = allocateMeshIps(selected.length);
+  // Placeholder IPs — overridden with app-specific subnet in createCluster()
+  const meshIps = allocateMeshIps(selected.length, '10.50.0');
 
   const nodes: ClusterNode[] = selected.map((n, i) => ({
     nodeId:      n.id,
@@ -197,7 +211,7 @@ export async function planCluster(req: ClusterRequirements): Promise<ClusterPlan
     totalCpuCores: nodes.reduce((s, n) => s + n.cpuCores, 0),
     totalRamMb:    nodes.reduce((s, n) => s + n.ramMb,    0),
     totalVramMb:   nodes.reduce((s, n) => s + (n.gpuMemoryMb ?? 0) * n.gpuCount, 0),
-    meshSubnet:    '10.50.0.0/24',
+    meshSubnet:    '10.50.0.0/24', // placeholder — replaced in createCluster()
     proximityTier: tier,
   };
 }
@@ -205,6 +219,13 @@ export async function planCluster(req: ClusterRequirements): Promise<ClusterPlan
 // ── Persist cluster to DB ─────────────────────────────────────────────────────
 
 export async function createCluster(appId: string, plan: ClusterPlan) {
+  // Generate a unique /24 subnet for this cluster using the app UUID
+  const { subnet: meshSubnet, base: meshBase } = appMeshSubnet(appId);
+  const assignedIps = allocateMeshIps(plan.nodes.length, meshBase);
+
+  // Re-assign mesh IPs using the app-specific subnet
+  const nodes = plan.nodes.map((n, i) => ({ ...n, meshIp: assignedIps[i] }));
+
   return prisma.$transaction(async (tx) => {
     const cluster = await (tx.resourceCluster as any).create({
       data: {
@@ -212,10 +233,10 @@ export async function createCluster(appId: string, plan: ClusterPlan) {
         totalVramMb:   plan.totalVramMb,
         totalRamMb:    plan.totalRamMb,
         totalCpuCores: plan.totalCpuCores,
-        meshSubnet:    plan.meshSubnet,
+        meshSubnet,
         status:        'FORMING',
         members: {
-          create: plan.nodes.map(n => ({
+          create: nodes.map(n => ({
             nodeId: n.nodeId,
             meshIp: n.meshIp,
             role:   n.role,
@@ -226,7 +247,7 @@ export async function createCluster(appId: string, plan: ClusterPlan) {
     });
 
     // Stamp meshIp onto each Node for quick lookup
-    for (const n of plan.nodes) {
+    for (const n of nodes) {
       await (tx.node as any).update({
         where: { id: n.nodeId },
         data:  { meshIp: n.meshIp },

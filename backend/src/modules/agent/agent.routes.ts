@@ -9,18 +9,19 @@ const router = Router();
 // Called by install.sh / install.ps1 during provisioning
 router.post('/enroll', agentController.enrollAgent);
 
-// ── Protected node management (ADM only) ─────────────────────────────────────
-router.get(   '/nodes',             authenticate, authorize('ADM'), agentController.listNodes);
-router.post(  '/nodes',             authenticate, authorize('ADM'), agentController.createNode);
-router.delete('/nodes/:id',         authenticate, authorize('ADM'), agentController.deleteNode);
-router.post(  '/nodes/:id/command', authenticate, authorize('ADM'), agentController.sendCommand);
-router.get(   '/nodes/:id/telemetry', authenticate, authorize('ADM'), agentController.getNodeTelemetry);
+// ── Protected node management ─────────────────────────────────────────────────
+// TECNICO can register/manage their own provider nodes; ADM manages all.
+router.get(   '/nodes',             authenticate, authorize('ADM', 'TECNICO'), agentController.listNodes);
+router.post(  '/nodes',             authenticate, authorize('ADM', 'TECNICO'), agentController.createNode);
+router.delete('/nodes/:id',         authenticate, authorize('ADM', 'TECNICO'), agentController.deleteNode);
+router.post(  '/nodes/:id/command', authenticate, authorize('ADM'),            agentController.sendCommand);
+router.get(   '/nodes/:id/telemetry', authenticate, authorize('ADM', 'TECNICO'), agentController.getNodeTelemetry);
 router.get(   '/nodes/:id/scan-ports', authenticate, authorize('ADM', 'TECNICO'), agentController.scanNodePorts);
-router.post(  '/nodes/:id/terminate',  authenticate, authorize('ADM'), agentController.terminateNodeAgent);
+router.post(  '/nodes/:id/terminate',  authenticate, authorize('ADM', 'TECNICO'), agentController.terminateNodeAgent);
 
 // ── Node Policy (Hardware Leash) ──────────────────────────────────────────────
-router.put('/nodes/:id/policy', authenticate, authorize('ADM'), agentController.upsertNodePolicy);
-router.get('/nodes/:id/policy', authenticate, authorize('ADM'), agentController.getNodePolicy);
+router.put('/nodes/:id/policy', authenticate, authorize('ADM', 'TECNICO'), agentController.upsertNodePolicy);
+router.get('/nodes/:id/policy', authenticate, authorize('ADM', 'TECNICO'), agentController.getNodePolicy);
 
 // ── File Manager (Global FTP) ───────────────────────────────────────────────────
 router.get(   '/nodes/:id/files',       authenticate, authorize('ADM', 'TECNICO'), agentController.listNodeFiles);

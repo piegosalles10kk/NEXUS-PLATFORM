@@ -69,9 +69,12 @@ export async function enrollAgent(req: Request, res: Response, next: NextFunctio
 }
 
 // ── GET /api/v1/agent/nodes ───────────────────────────────────────────────────
-export async function listNodes(_req: Request, res: Response, next: NextFunction) {
+export async function listNodes(req: Request, res: Response, next: NextFunction) {
   try {
+    // ADM sees all nodes; TECNICO sees only their own
+    const isAdmin = req.user?.role === 'ADM';
     const nodes = await prisma.node.findMany({
+      where: isAdmin ? {} : { userId: req.user!.id },
       orderBy: { createdAt: 'desc' },
       include: {
         policy: true,
@@ -100,13 +103,14 @@ export async function createNode(req: Request, res: Response, next: NextFunction
     // Permanent token stored in DB — used to match the node on reconnect
     const persistentToken = crypto.randomBytes(32).toString('hex');
 
-    const node = await prisma.node.create({
+    const node = await (prisma.node as any).create({
       data: {
         name:   name.trim(),
         os:     'unknown',
         arch:   'unknown',
         token:  persistentToken,
         status: 'OFFLINE',
+        userId: req.user!.id,
       },
     });
 
@@ -130,6 +134,19 @@ export async function createNode(req: Request, res: Response, next: NextFunction
 export async function deleteNode(req: Request<{ id: string }>, res: Response, next: NextFunction) {
   try {
     const { id } = req.params;
+    const isAdmin = req.user?.role === 'ADM';
+
+    // Verify ownership (ADM can delete any node)
+    const node = await (prisma.node as any).findUnique({ where: { id }, select: { userId: true } });
+    if (!node) {
+      res.status(404).json({ status: 'error', message: 'Node not found.' });
+      return;
+    }
+    if (!isAdmin && node.userId !== req.user!.id) {
+      res.status(403).json({ status: 'error', message: 'Forbidden — this node belongs to another user.' });
+      return;
+    }
+
     const ws = getAgentSocket(id);
     if (ws) ws.close(1000, 'Node deleted');
 

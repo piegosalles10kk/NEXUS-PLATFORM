@@ -166,6 +166,7 @@ export interface DeployAppOptions {
   region?: string;       // ISO-3166-1 alpha-2 — enforces geography at scheduling time
   replicaCount?: number;
   requireGpu?: boolean;  // If true, only schedule on GPU-capable nodes
+  userId?: string;       // Tenant who deployed this app (consumer)
 }
 
 /**
@@ -183,6 +184,7 @@ export async function createDeployment(options: DeployAppOptions) {
     region,
     replicaCount = 3,
     requireGpu = false,
+    userId,
   } = options;
 
   const resolvedMode = executionMode === 'AUTO' ? 'MICROVM' : executionMode;
@@ -206,10 +208,10 @@ export async function createDeployment(options: DeployAppOptions) {
   }
 
   // 2. Upsert DePINApp record
-  const app = await prisma.dePINApp.upsert({
+  const app = await (prisma.dePINApp as any).upsert({
     where: { slug },
     update: { executionMode: resolvedMode, imageRef, envVars, port, region, replicaCount, status: 'PENDING' },
-    create: { name, slug, executionMode: resolvedMode, imageRef, envVars, port, region, replicaCount, status: 'PENDING' },
+    create: { name, slug, executionMode: resolvedMode, imageRef, envVars, port, region, replicaCount, status: 'PENDING', userId },
   });
 
   // 3. Create NodeAssignment records (first = LEADER for MICROVM, rest = FOLLOWER)
@@ -243,9 +245,10 @@ export async function createDeployment(options: DeployAppOptions) {
 
 /**
  * Loads a DePINApp with its assignments and node details.
+ * If userId is provided, enforces ownership (returns null if mismatch).
  */
-export async function getApp(appId: string) {
-  return prisma.dePINApp.findUnique({
+export async function getApp(appId: string, userId?: string) {
+  const app = await (prisma.dePINApp as any).findUnique({
     where: { id: appId },
     include: {
       assignments: {
@@ -253,13 +256,17 @@ export async function getApp(appId: string) {
       },
     },
   });
+  if (!app) return null;
+  if (userId && app.userId && app.userId !== userId) return null; // tenant isolation
+  return app;
 }
 
 /**
- * Lists all DePIN apps with their assignments.
+ * Lists DePIN apps. ADM (userId = undefined) sees all; tenant sees only theirs.
  */
-export async function listApps() {
-  return prisma.dePINApp.findMany({
+export async function listApps(userId?: string) {
+  return (prisma.dePINApp as any).findMany({
+    where: userId ? { userId } : {},
     orderBy: { createdAt: 'desc' },
     include: {
       assignments: {

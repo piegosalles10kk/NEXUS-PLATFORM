@@ -10,6 +10,7 @@ export const registerSchema = z.object({
   email: z.string().email('Invalid email format'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
   role: z.enum(['ADM', 'TECNICO', 'OBSERVADOR']).optional(),
+  inviteCode: z.string().optional(),
 });
 
 export const forgotPasswordSchema = z.object({

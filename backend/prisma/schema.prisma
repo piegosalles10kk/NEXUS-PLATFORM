@@ -51,8 +51,26 @@ model User {
   deploys      DeployHistory[]
   widgets      DashboardWidget[]
   wallet       Wallet?
+  nodes        Node[]
+  depinApps    DePINApp[]
+  inviteCodes  InviteCode[]
 
   @@map("users")
+}
+
+// ─── Invite Codes (Testnet onboarding) ───────────────────────────────────────
+
+model InviteCode {
+  id              String    @id @default(uuid())
+  code            String    @unique
+  createdByUserId String    @map("created_by_user_id")
+  createdBy       User      @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  usedById        String?   @unique @map("used_by_id")
+  usedAt          DateTime? @map("used_at")
+  genesisUsd      Float     @default(50) @map("genesis_usd")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@map("invite_codes")
 }
 
 model DashboardWidget {
@@ -243,6 +261,9 @@ model Node {
   // WireGuard mesh
   wireguardPubKey  String?          @map("wireguard_pub_key")
   meshIp           String?          @map("mesh_ip")   // 10.50.x.x assigned by master
+  // Tenant ownership — which user registered this node as a provider
+  userId           String?          @map("user_id")
+  owner            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   lastPing         DateTime         @updatedAt @map("last_ping")
   createdAt        DateTime         @default(now()) @map("created_at")
   projects         Project[]
@@ -337,6 +358,9 @@ model DePINApp {
   priceMultiplier Float           @default(1.0) @map("price_multiplier")
   // Surge price locked at deploy time — consumer always pays this, provider gets bonus if surge rises
   lockedHourlyUsd Float          @default(0) @map("locked_hourly_usd")
+  // Tenant ownership — which user deployed this app as a consumer
+  userId         String?          @map("user_id")
+  owner          User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   assignments    NodeAssignment[]
   usageRecords   UsageRecord[]
   cluster        ResourceCluster?

@@ -82,6 +82,7 @@ export async function deployApp(req: Request, res: Response, next: NextFunction)
       port,
       region,
       replicaCount,
+      userId: req.user!.id,
     });
 
     // 3. Dispatch workload to selected agents (fire-and-forget, errors are logged)
@@ -104,9 +105,11 @@ export async function deployApp(req: Request, res: Response, next: NextFunction)
 }
 
 // ── GET /api/v1/scheduler/apps ────────────────────────────────────────────────
-export async function listApps(_req: Request, res: Response, next: NextFunction) {
+export async function listApps(req: Request, res: Response, next: NextFunction) {
   try {
-    const apps = await scheduler.listApps();
+    // ADM sees all apps; TECNICO sees only their own
+    const userId = req.user?.role === 'ADM' ? undefined : req.user!.id;
+    const apps = await scheduler.listApps(userId);
     res.json({ status: 'success', data: { apps } });
   } catch (err) {
     next(err);
@@ -116,7 +119,8 @@ export async function listApps(_req: Request, res: Response, next: NextFunction)
 // ── GET /api/v1/scheduler/apps/:id ───────────────────────────────────────────
 export async function getApp(req: Request<{ id: string }>, res: Response, next: NextFunction) {
   try {
-    const app = await scheduler.getApp(req.params.id);
+    const userId = req.user?.role === 'ADM' ? undefined : req.user!.id;
+    const app = await scheduler.getApp(req.params.id, userId);
     if (!app) {
       res.status(404).json({ status: 'error', message: 'App not found.' });
       return;
@@ -130,7 +134,8 @@ export async function getApp(req: Request<{ id: string }>, res: Response, next: 
 // ── DELETE /api/v1/scheduler/apps/:id ────────────────────────────────────────
 export async function removeApp(req: Request<{ id: string }>, res: Response, next: NextFunction) {
   try {
-    const app = await scheduler.getApp(req.params.id);
+    const userId = req.user?.role === 'ADM' ? undefined : req.user!.id;
+    const app = await scheduler.getApp(req.params.id, userId);
     if (!app) {
       res.status(404).json({ status: 'error', message: 'App not found.' });
       return;

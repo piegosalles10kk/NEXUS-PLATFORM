@@ -36,21 +36,59 @@ export async function login(data: LoginInput): Promise<{ token: string; user: Jw
 
 export async function register(data: RegisterInput): Promise<JwtPayload> {
   const existingUser = await prisma.user.findUnique({ where: { email: data.email } });
+  if (existingUser) throw new ConflictError('Email already registered');
 
-  if (existingUser) {
-    throw new ConflictError('Email already registered');
+  // ── Invite-only gate ──────────────────────────────────────────────────────
+  const totalUsers = await prisma.user.count();
+  let inviteRecord: { id: string; genesisUsd: number } | null = null;
+
+  if (totalUsers > 0) {
+    // Not the first user — invite code is required
+    if (!data.inviteCode) {
+      throw new UnauthorizedError('An invite code is required to register.');
+    }
+    inviteRecord = await (prisma.inviteCode as any).findUnique({
+      where: { code: data.inviteCode },
+      select: { id: true, genesisUsd: true, usedById: true },
+    });
+    if (!inviteRecord) throw new UnauthorizedError('Invalid invite code.');
+    if ((inviteRecord as any).usedById) throw new UnauthorizedError('Invite code already used.');
   }
 
   const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
 
+  // Default role for testnet users: TECNICO (can register nodes + deploy apps)
+  const role: Role = totalUsers === 0
+    ? ((data.role as Role) || 'ADM')     // First user becomes ADM
+    : 'TECNICO';
+
   const user = await prisma.user.create({
+    data: { name: data.name, email: data.email, passwordHash, role },
+  });
+
+  // ── Genesis wallet ────────────────────────────────────────────────────────
+  const genesisCredits = inviteRecord?.genesisUsd ?? 0;
+  await prisma.wallet.create({
     data: {
-      name: data.name,
-      email: data.email,
-      passwordHash,
-      role: (data.role as Role) || 'OBSERVADOR',
+      userId:     user.id,
+      balanceUsd: genesisCredits,
+      transactions: genesisCredits > 0 ? {
+        create: {
+          type:        'DEPOSIT',
+          amountUsd:   genesisCredits,
+          description: 'Genesis testnet credit (invite bonus)',
+        },
+      } : undefined,
     },
   });
+
+  // ── Mark invite code as used ──────────────────────────────────────────────
+  if (inviteRecord) {
+    await (prisma.inviteCode as any).update({
+      where: { id: inviteRecord.id },
+      data:  { usedById: user.id, usedAt: new Date() },
+    });
+  }
 
   return { id: user.id, email: user.email, role: user.role, name: user.name };
 }
