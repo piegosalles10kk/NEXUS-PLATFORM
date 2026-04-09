@@ -22,6 +22,7 @@ import DePINClusterView from './pages/DePINClusterView';
 import BillingPage from './pages/BillingPage';
 import ProviderPage from './pages/ProviderPage';
 import SonarRadarPage from './pages/SonarRadarPage';
+import SentinelPage from './pages/SentinelPage';
 
 function App() {
   return (
@@ -100,6 +101,15 @@ function App() {
             <ProtectedRoute>
               <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
                 <AppLayout><SettingsPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
+
+          {/* ── Protected — Sentinel backoffice (ADM only) ─────────────── */}
+          <Route path="/sentinel" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <SentinelPage />
               </RoleGuard>
             </ProtectedRoute>
           } />

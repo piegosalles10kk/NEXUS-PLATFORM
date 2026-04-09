@@ -13,6 +13,12 @@ enum Role {
   OBSERVADOR
 }
 
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
 enum EnvironmentType {
   LOCAL
   CLOUD
@@ -38,22 +44,45 @@ enum StepActionType {
   REMOTE_SSH_COMMAND
 }
 
+// ─── Tenant (Organização) ─────────────────────────────────────────────────────
+
+model Tenant {
+  id          String        @id @default(uuid())
+  name        String
+  document    String?       // CNPJ or CPF
+  status      TenantStatus  @default(ACTIVE)
+  creditUsd   Float         @default(0) @map("credit_usd") // total circulating credits
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  users       User[]
+  nodes       Node[]
+  depinApps   DePINApp[]
+  wallets     Wallet[]
+
+  @@map("tenants")
+}
+
 model User {
   id           String          @id @default(uuid())
   name         String
   email        String          @unique
   passwordHash String          @map("password_hash")
   role         Role            @default(OBSERVADOR)
+  isActive     Boolean         @default(true) @map("is_active")
+  // Tenant membership
+  tenantId     String?         @map("tenant_id")
+  tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   resetToken   String?         @map("reset_token")
   resetExpires DateTime?       @map("reset_expires")
-  createdAt    DateTime          @default(now()) @map("created_at")
-  updatedAt    DateTime          @updatedAt @map("updated_at")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
   deploys      DeployHistory[]
   widgets      DashboardWidget[]
   wallet       Wallet?
   nodes        Node[]
   depinApps    DePINApp[]
   inviteCodes  InviteCode[]
+  auditActions AuditLog[]      @relation("AuditActor")
 
   @@map("users")
 }
@@ -264,6 +293,8 @@ model Node {
   // Tenant ownership — which user registered this node as a provider
   userId           String?          @map("user_id")
   owner            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenantId         String?          @map("tenant_id")
+  tenant           Tenant?          @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   lastPing         DateTime         @updatedAt @map("last_ping")
   createdAt        DateTime         @default(now()) @map("created_at")
   projects         Project[]
@@ -361,6 +392,8 @@ model DePINApp {
   // Tenant ownership — which user deployed this app as a consumer
   userId         String?          @map("user_id")
   owner          User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenantId       String?          @map("tenant_id")
+  tenant         Tenant?          @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   assignments    NodeAssignment[]
   usageRecords   UsageRecord[]
   cluster        ResourceCluster?
@@ -430,6 +463,8 @@ model Wallet {
   id           String             @id @default(uuid())
   userId       String             @unique @map("user_id")
   user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId     String?            @map("tenant_id")
+  tenant       Tenant?            @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   balanceUsd   Float              @default(0) @map("balance_usd")
   earnedUsd    Float              @default(0) @map("earned_usd")   // lifetime Provider earnings
   spentUsd     Float              @default(0) @map("spent_usd")    // lifetime Consumer spend
@@ -487,6 +522,37 @@ model NodePolicy {
   updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@map("node_policies")
+}
+
+// ─── Audit Trail (Sprint 16 — LGPD compliance) ───────────────────────────────
+
+enum AuditAction {
+  BAN
+  UNBAN
+  MINT
+  BURN
+  DELETE_USER
+  HALT
+  CREATE_INVITE
+  NODE_TERMINATE
+  APP_REMOVE
+}
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  actorId    String?     @map("actor_id")
+  actor      User?       @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action     AuditAction
+  targetId   String?     @map("target_id")   // userId, nodeId, appId, etc.
+  ipAddress  String?     @map("ip_address")
+  payload    Json?                             // extra context
+  signature  String                            // SHA-256(action+targetId+timestamp)
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
 
 // ─── Cloud Module ─────────────────────────────────────────────────────────────

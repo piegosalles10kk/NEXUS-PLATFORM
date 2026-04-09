@@ -12,9 +12,8 @@ const SALT_ROUNDS = 12;
 export async function login(data: LoginInput): Promise<{ token: string; user: JwtPayload }> {
   const user = await prisma.user.findUnique({ where: { email: data.email } });
 
-  if (!user) {
-    throw new UnauthorizedError('Invalid credentials');
-  }
+  if (!user) throw new UnauthorizedError('Invalid credentials');
+  if (!(user as any).isActive) throw new UnauthorizedError('This account has been deactivated.');
 
   const passwordValid = await bcrypt.compare(data.password, user.passwordHash);
 

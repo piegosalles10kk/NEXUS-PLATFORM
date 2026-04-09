@@ -760,6 +760,48 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 			log.Println("[mesh] WireGuard overlay torn down")
 		}()
 
+	// ── M.A.D. Emergency Halt (Sprint 16.3) ──────────────────────────────────
+	// Broadcast by Sentinel when a zero-day is detected.
+	// Chain: kill workloads → tear down WireGuard → purge cgroups → os.Exit(0)
+	case "emergency_halt":
+		go func() {
+			log.Println("[HALT] ⚠️  EMERGENCY HALT received — initiating shutdown sequence")
+
+			// 1. Kill all Nexus Docker containers
+			killOut, _ := exec.Command(
+				docker.GetExecutable("docker"), "kill",
+				"$("+docker.GetExecutable("docker")+" ps -q -f name=nexus)",
+			).CombinedOutput()
+			log.Printf("[HALT] docker kill: %s", strings.TrimSpace(string(killOut)))
+
+			// Use a more portable shell pipe for Windows/Linux compatibility
+			if runtime.GOOS == "windows" {
+				_ = exec.Command("cmd", "/C",
+					"FOR /f \"tokens=*\" %i IN ('docker ps -q -f name=nexus') DO docker kill %i",
+				).Run()
+			} else {
+				_ = exec.Command("sh", "-c",
+					"docker ps -q -f name=nexus | xargs -r docker kill",
+				).Run()
+			}
+
+			// 2. Tear down WireGuard mesh overlay
+			TeardownMesh()
+			log.Println("[HALT] WireGuard mesh torn down")
+
+			// 3. Remove cgroup v2 nexus slice (Linux only)
+			if runtime.GOOS == "linux" {
+				_ = exec.Command("cgdelete", "-r", "cpu,memory:nexus.slice").Run()
+				log.Println("[HALT] cgroups purged")
+			}
+
+			// 4. Stop all active streams / log pipes
+			docker.StopAllStreams()
+
+			log.Println("[HALT] Shutdown complete — agent exiting now")
+			os.Exit(0)
+		}()
+
 	// ── Collective VM workload (Sprint 13.1) ─────────────────────────────────
 	case "start_collective_vm":
 		go func() {
