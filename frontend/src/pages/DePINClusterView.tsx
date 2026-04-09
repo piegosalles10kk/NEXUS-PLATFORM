@@ -215,6 +215,12 @@ export default function DePINClusterView() {
             {app.assignments.map((a, i) => {
               const telemetry = live[a.node.id];
               const isLive = onlineNodes.has(a.node.id);
+              const cpu = telemetry
+                ? (telemetry.cpuPercent ?? telemetry.cpu_percent ?? telemetry.cpu ?? 0)
+                : 0;
+              const mem = telemetry
+                ? (telemetry.memPercent ?? telemetry.mem_percent ?? telemetry.memory_percent ?? 0)
+                : 0;
               return (
                 <div key={a.id} className={`flex items-center gap-4 px-5 py-4 stagger-${Math.min(i + 1, 4)}`}>
                   {/* Status dot */}
@@ -232,10 +238,7 @@ export default function DePINClusterView() {
                   </div>
 
                   {/* Telemetry bars */}
-                  {telemetry ? (() => {
-                    const cpu = telemetry.cpuPercent ?? telemetry.cpu_percent ?? telemetry.cpu ?? 0;
-                    const mem = telemetry.memPercent ?? telemetry.mem_percent ?? telemetry.memory_percent ?? 0;
-                    return (
+                  {telemetry ? (
                     <div className="hidden md:flex flex-col gap-1.5 w-32 shrink-0">
                       <div className="flex items-center justify-between text-[11px] text-text-muted">
                         <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />CPU</span>
@@ -248,8 +251,6 @@ export default function DePINClusterView() {
                       </div>
                       <MiniBar value={mem} color={mem > 90 ? 'bg-danger' : 'bg-info'} />
                     </div>
-                    );
-                  })()
                   ) : (
                     <div className="hidden md:block w-32 shrink-0 text-[12px] text-text-muted italic">
                       Sem telemetria
