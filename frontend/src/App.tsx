@@ -21,6 +21,7 @@ import DePINAppsPage from './pages/DePINAppsPage';
 import DePINClusterView from './pages/DePINClusterView';
 import BillingPage from './pages/BillingPage';
 import ProviderPage from './pages/ProviderPage';
+import SonarRadarPage from './pages/SonarRadarPage';
 
 function App() {
   return (
@@ -49,6 +50,9 @@ function App() {
           } />
           <Route path="/depin/:id" element={
             <ProtectedRoute><AppLayout><DePINClusterView /></AppLayout></ProtectedRoute>
+          } />
+          <Route path="/collective" element={
+            <ProtectedRoute><AppLayout><SonarRadarPage /></AppLayout></ProtectedRoute>
           } />
 
           {/* ── Protected — Financeiro ─────────────────────────────────── */}

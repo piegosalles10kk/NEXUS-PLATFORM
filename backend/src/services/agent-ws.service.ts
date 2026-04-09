@@ -367,9 +367,20 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
       import('./geo.service').then(({ lookupIp }) =>
         lookupIp(remoteIp).then(geo => {
           if (!geo) return;
-          prisma.node.update({
+          const CONTINENT_MAP: Record<string, string> = {
+            BR:'SA',AR:'SA',CL:'SA',CO:'SA',PE:'SA',
+            US:'NA',CA:'NA',MX:'NA',
+            GB:'EU',DE:'EU',FR:'EU',NL:'EU',IE:'EU',SE:'EU',NO:'EU',FI:'EU',AT:'EU',CH:'EU',
+            JP:'AP',KR:'AP',SG:'AP',IN:'AP',AU:'OC',NZ:'OC',ID:'AP',MY:'AP',
+            ZA:'AF',NG:'AF',KE:'AF',
+            AE:'ME',SA:'ME',
+          };
+          (prisma.node as any).update({
             where: { id: nodeId },
-            data: { country: geo.country, state: geo.state, city: geo.city },
+            data: {
+              country: geo.country, state: geo.state, city: geo.city,
+              continent: geo.country ? (CONTINENT_MAP[geo.country.toUpperCase()] ?? null) : null,
+            },
           }).catch(console.error);
         })
       ).catch(() => {});
@@ -389,21 +400,33 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
                      .catch(console.error);
           break;
 
-        case 'metrics':
-          // Legacy broadcast — also used for GPU detection (HostMetrics includes GPUs)
+        case 'metrics': {
+          // Build update payload: GPU fields + Sonar latency + hardware capacity
+          const updateData: Record<string, any> = {};
+
           if (Array.isArray(msg.data?.gpus) && msg.data.gpus.length > 0) {
             const gpus: Array<{ name: string; memory_total_mb: number }> = msg.data.gpus;
-            prisma.node.update({
-              where: { id: nodeId },
-              data: {
-                gpuModel:    gpus[0].name ?? null,
-                gpuMemoryMb: gpus.reduce((s, g) => s + (g.memory_total_mb ?? 0), 0),
-                gpuCount:    gpus.length,
-              },
-            }).catch(console.error);
+            updateData.gpuModel    = gpus[0].name ?? null;
+            updateData.gpuMemoryMb = gpus.reduce((s: number, g: any) => s + (g.memory_total_mb ?? 0), 0);
+            updateData.gpuCount    = gpus.length;
           }
+
+          // Sprint 12.2 — persist Sonar latency from heartbeat
+          if (typeof msg.sonarLatencyMs === 'number' && msg.sonarLatencyMs >= 0) {
+            updateData.sonarLatencyMs = msg.sonarLatencyMs;
+          }
+
+          // Persist hardware capacity if provided
+          if (typeof msg.data?.cpuCores === 'number') updateData.cpuCores = msg.data.cpuCores;
+          if (typeof msg.data?.ramTotal === 'number')  updateData.ramMb    = Math.round(msg.data.ramTotal / (1024 * 1024));
+
+          if (Object.keys(updateData).length > 0) {
+            (prisma.node as any).update({ where: { id: nodeId }, data: updateData }).catch(console.error);
+          }
+
           io.emit('node:metrics', { nodeId, data: msg.data });
           break;
+        }
 
         case 'telemetry':
           // Save to Redis (capped to last 100 entries)

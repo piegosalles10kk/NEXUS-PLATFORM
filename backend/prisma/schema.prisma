@@ -217,30 +217,75 @@ enum NodeStatus {
 }
 
 model Node {
-  id             String           @id @default(uuid())
-  name           String
-  os             String
-  arch           String
-  token          String           @unique
-  status         NodeStatus       @default(OFFLINE)
-  version        String           @default("v1.0.0")
-  ipAddress      String?          @map("ip_address")
-  country        String?          // ISO-3166-1 alpha-2, e.g. "BR"
-  state          String?
-  city           String?
+  id               String           @id @default(uuid())
+  name             String
+  os               String
+  arch             String
+  token            String           @unique
+  status           NodeStatus       @default(OFFLINE)
+  version          String           @default("v1.0.0")
+  ipAddress        String?          @map("ip_address")
+  // Geography — ISO-3166-1 alpha-2 country, state/province, city, continent code
+  country          String?          // e.g. "BR"
+  state            String?          // e.g. "SP"
+  city             String?
+  continent        String?          // "SA" | "NA" | "EU" | "AP" | "AF" | "OC"
   // GPU hardware capability (null = CPU-only node)
-  gpuModel       String?          @map("gpu_model")
-  gpuMemoryMb    Int?             @map("gpu_memory_mb")
-  gpuCount       Int              @default(0) @map("gpu_count")
+  gpuModel         String?          @map("gpu_model")
+  gpuMemoryMb      Int?             @map("gpu_memory_mb")
+  gpuCount         Int              @default(0) @map("gpu_count")
+  cpuCores         Int              @default(0) @map("cpu_cores")
+  ramMb            Int              @default(0) @map("ram_mb")
   // Network transit status: IDLE | STANDBY | STREAMING
-  transitStatus  String           @default("IDLE") @map("transit_status")
-  lastPing       DateTime         @updatedAt @map("last_ping")
-  createdAt      DateTime         @default(now()) @map("created_at")
-  projects       Project[]
-  assignments    NodeAssignment[]
-  policy         NodePolicy?
+  transitStatus    String           @default("IDLE") @map("transit_status")
+  // Sonar Pulse — latency to ingress gateway in ms (updated each heartbeat)
+  sonarLatencyMs   Float?           @map("sonar_latency_ms")
+  // WireGuard mesh
+  wireguardPubKey  String?          @map("wireguard_pub_key")
+  meshIp           String?          @map("mesh_ip")   // 10.50.x.x assigned by master
+  lastPing         DateTime         @updatedAt @map("last_ping")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  projects         Project[]
+  assignments      NodeAssignment[]
+  clusterMembers   ClusterMembership[]
+  policy           NodePolicy?
 
   @@map("nodes")
+}
+
+// ─── Collective Resource Clusters (Sprint 11) ─────────────────────────────────
+
+model ResourceCluster {
+  id            String              @id @default(uuid())
+  appId         String              @unique @map("app_id")
+  app           DePINApp            @relation(fields: [appId], references: [id], onDelete: Cascade)
+  members       ClusterMembership[]
+  // Aggregated capacity across all member nodes
+  totalVramMb   Int                 @default(0) @map("total_vram_mb")
+  totalRamMb    Int                 @default(0) @map("total_ram_mb")
+  totalCpuCores Int                 @default(0) @map("total_cpu_cores")
+  // WireGuard overlay network
+  meshSubnet    String              @default("10.50.0.0/24") @map("mesh_subnet")
+  // FORMING | READY | DEGRADED | OFFLINE
+  status        String              @default("FORMING")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  @@map("resource_clusters")
+}
+
+model ClusterMembership {
+  id        String          @id @default(uuid())
+  clusterId String          @map("cluster_id")
+  cluster   ResourceCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  nodeId    String          @map("node_id")
+  node      Node            @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  meshIp    String          @map("mesh_ip")        // 10.50.0.x assigned within cluster
+  role      String          @default("WORKER")     // LEADER | WORKER
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  @@unique([clusterId, nodeId])
+  @@map("cluster_memberships")
 }
 
 // ─── DePIN Execution Layer ────────────────────────────────────────────────────
@@ -294,6 +339,7 @@ model DePINApp {
   lockedHourlyUsd Float          @default(0) @map("locked_hourly_usd")
   assignments    NodeAssignment[]
   usageRecords   UsageRecord[]
+  cluster        ResourceCluster?
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
 

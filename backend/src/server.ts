@@ -2,6 +2,7 @@ import { env } from './config/env';
 import { createApp } from './app';
 import prisma from './config/database';
 import { stopMonitoring } from './services/monitoring.service';
+import { runNetworkMonitor, runDailyBillingCron } from './services/scheduler.service';
 
 async function main() {
   // Verify database connection
@@ -27,9 +28,24 @@ async function main() {
     `);
   });
 
+  // ── Background monitors ──────────────────────────────────────────────────
+  // Network monitor: transit saturation + Sonar gateway swap every 30 s
+  const networkInterval = setInterval(() => runNetworkMonitor(), 30_000);
+  // Daily billing consolidation at 00:00 UTC
+  const now = new Date();
+  const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 10).getTime() - now.getTime();
+  setTimeout(() => {
+    runDailyBillingCron().catch(console.error);
+    setInterval(() => runDailyBillingCron().catch(console.error), 24 * 60 * 60 * 1000);
+  }, msUntilMidnight);
+
+  console.log('⚡ Sonar + Transit monitor active (30s interval)');
+  console.log(`⏰ Daily billing cron scheduled in ${Math.round(msUntilMidnight / 60000)} min`);
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received. Shutting down gracefully...`);
+    clearInterval(networkInterval);
     stopMonitoring();
     await prisma.$disconnect();
     server.close(() => {

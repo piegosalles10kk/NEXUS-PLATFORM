@@ -26,6 +26,7 @@ import dashboardRoutes from './modules/dashboard/dashboard.routes';
 import schedulerRoutes from './modules/scheduler/scheduler.routes';
 import billingRoutes from './modules/billing/billing.routes';
 import ingressRoutes from './modules/ingress/ingress.routes';
+import clusterRoutes from './modules/cluster/cluster.routes';
 import { startAgentWsServer } from './services/agent-ws.service';
 import { startFailoverMonitor } from './services/failover.service';
 import { trafficManager } from './modules/gateway/traffic.middleware';
@@ -184,6 +185,7 @@ export function createApp() {
   app.use('/api/v1/agent', agentRoutes);
   app.use('/api/v1/scheduler', schedulerRoutes);
   app.use('/api/v1/billing', billingRoutes);
+  app.use('/api/v1/clusters', clusterRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/webhook', webhookRoutes);
 

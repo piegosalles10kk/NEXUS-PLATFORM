@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   LayoutDashboard, Users, LogOut, Shield, Settings,
-  Globe, Cloud, FolderGit2, Network, Cpu, ChevronDown,
+  Globe, Cloud, FolderGit2, Network, Cpu, ChevronDown, Radio,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -86,6 +86,20 @@ export default function Navbar() {
               >
                 <Cpu className="w-4 h-4 shrink-0" />
                 Provedor de Hardware
+              </NavLink>
+              <NavLink
+                to="/collective"
+                onClick={() => setDepinOpen(false)}
+                className={({ isActive }) =>
+                  `flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
+                    isActive
+                      ? 'font-semibold text-text-primary'
+                      : 'font-medium text-text-secondary hover:text-text-primary'
+                  }`
+                }
+              >
+                <Radio className="w-4 h-4 shrink-0" />
+                Collective
               </NavLink>
               <NavLink
                 to="/billing"

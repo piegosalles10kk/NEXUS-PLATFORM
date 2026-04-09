@@ -429,6 +429,16 @@ export async function runDailyBillingCron(): Promise<void> {
 }
 
 /**
+ * Runs both the transit saturation check and the Sonar latency monitor.
+ * Wire this to a 30 s interval at startup.
+ */
+export async function runNetworkMonitor(io?: any): Promise<void> {
+  await checkTransitSaturation(io).catch(err => console.error('[monitor] transit check error:', err));
+  const { runSonarMonitor } = await import('./sonar.service');
+  await runSonarMonitor().catch(err => console.error('[monitor] sonar error:', err));
+}
+
+/**
  * Marks an app and all its assignments as OFFLINE.
  */
 export async function removeApp(appId: string) {

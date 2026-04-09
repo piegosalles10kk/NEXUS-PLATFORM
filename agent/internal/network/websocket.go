@@ -156,10 +156,16 @@ func connect(ctx context.Context, masterURL, token string, metricsCh <-chan metr
 				if !ok {
 					return
 				}
-				b, err := json.Marshal(map[string]any{"type": "metrics", "data": m})
-				if err == nil {
-					outCh <- b
-				}
+				// Sprint 12.2 — embed Sonar latency in every metrics heartbeat
+			sonarMs := MeasureLatency()
+			payload := map[string]any{"type": "metrics", "data": m}
+			if sonarMs >= 0 {
+				payload["sonarLatencyMs"] = sonarMs
+			}
+			b, err := json.Marshal(payload)
+			if err == nil {
+				outCh <- b
+			}
 			}
 		}
 	}()
@@ -726,6 +732,20 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 	case "deactivate_transit":
 		go func() {
 			agentvm.StopGatewayVM()
+		}()
+
+	// ── WireGuard mesh setup (Sprint 12.1) ────────────────────────────────────
+	case "setup_mesh":
+		go func() {
+			rawMsg, _ := json.Marshal(msg)
+			HandleSetupMesh(rawMsg, out, ctx)
+		}()
+
+	// ── WireGuard mesh teardown ────────────────────────────────────────────────
+	case "teardown_mesh":
+		go func() {
+			TeardownMesh()
+			log.Println("[mesh] WireGuard overlay torn down")
 		}()
 
 	// ── NAT / public-IP discovery (T10.1) ─────────────────────────────────────
