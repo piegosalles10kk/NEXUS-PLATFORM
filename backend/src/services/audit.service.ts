@@ -11,7 +11,8 @@ import prisma from '../config/database';
 export type AuditAction =
   | 'BAN' | 'UNBAN' | 'MINT' | 'BURN'
   | 'DELETE_USER' | 'HALT' | 'CREATE_INVITE'
-  | 'NODE_TERMINATE' | 'APP_REMOVE';
+  | 'NODE_TERMINATE' | 'APP_REMOVE'
+  | 'BENCHMARK' | 'STRESS_TEST';
 
 export interface AuditEntry {
   actorId?:  string;
