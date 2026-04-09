@@ -34,6 +34,7 @@ import { trafficManager } from './modules/gateway/traffic.middleware';
 import { dynamicProxy } from './modules/gateway/proxy.service';
 import { startMonitoring, stopMonitoring } from './services/monitoring.service';
 import './services/log-streamer.service'; // Sprint 17.3 — intercept errors → sentinel:log
+import { startAutoCleanupCron } from './services/benchmark.service'; // Sprint 17.5 — Auto-Limpeza
 import { startDockerWatcher } from './services/docker-watcher.service';
 import { initGatewayConf } from './services/nginx-config.service';
 
@@ -127,6 +128,9 @@ export function createApp() {
   initGatewayConf().catch((err) =>
     console.error('Failed to init gateway config:', err.message),
   );
+
+  // Sprint 17.5 — Auto-Limpeza: daily silent benchmark sweep to detect degraded nodes
+  startAutoCleanupCron();
 
   // Global middlewares
   app.use(helmet({
