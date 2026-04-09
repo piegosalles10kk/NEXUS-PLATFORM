@@ -149,6 +149,16 @@ export default function LoginPage() {
                   'Entrar na Plataforma'
                 )}
               </button>
+
+              <p className="text-center text-sm text-text-secondary pt-1">
+                Não tem conta?{' '}
+                <Link
+                  to="/register"
+                  className="text-accent-light hover:text-accent transition-colors font-medium"
+                >
+                  Criar conta
+                </Link>
+              </p>
             </form>
           </div>
         </div>

@@ -62,7 +62,7 @@ export async function register(data: RegisterInput): Promise<JwtPayload> {
     : 'TECNICO';
 
   const user = await prisma.user.create({
-    data: { name: data.name, email: data.email, passwordHash, role },
+    data: { name: data.name, email: data.email, passwordHash, role, city: data.city, country: data.country },
   });
 
   // ── Genesis wallet ────────────────────────────────────────────────────────

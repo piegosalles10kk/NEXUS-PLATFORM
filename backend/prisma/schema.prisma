@@ -72,6 +72,8 @@ model User {
   // Tenant membership
   tenantId     String?         @map("tenant_id")
   tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  city         String?
+  country      String?         // ISO-3166-1 alpha-2, e.g. "BR"
   resetToken   String?         @map("reset_token")
   resetExpires DateTime?       @map("reset_expires")
   createdAt    DateTime        @default(now()) @map("created_at")
