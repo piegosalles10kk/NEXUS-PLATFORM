@@ -35,8 +35,12 @@ interface DePINApp {
 }
 
 interface LiveTelemetry {
-  cpuPercent: number;
-  memPercent: number;
+  cpuPercent?: number;
+  cpu_percent?: number;
+  cpu?: number;
+  memPercent?: number;
+  mem_percent?: number;
+  memory_percent?: number;
 }
 
 /* ── Status helpers ────────────────────────────────────────── */
@@ -228,19 +232,24 @@ export default function DePINClusterView() {
                   </div>
 
                   {/* Telemetry bars */}
-                  {telemetry ? (
+                  {telemetry ? (() => {
+                    const cpu = telemetry.cpuPercent ?? telemetry.cpu_percent ?? telemetry.cpu ?? 0;
+                    const mem = telemetry.memPercent ?? telemetry.mem_percent ?? telemetry.memory_percent ?? 0;
+                    return (
                     <div className="hidden md:flex flex-col gap-1.5 w-32 shrink-0">
                       <div className="flex items-center justify-between text-[11px] text-text-muted">
                         <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />CPU</span>
-                        <span>{telemetry.cpuPercent.toFixed(0)}%</span>
+                        <span>{cpu.toFixed(0)}%</span>
                       </div>
-                      <MiniBar value={telemetry.cpuPercent} color={telemetry.cpuPercent > 85 ? 'bg-danger' : 'bg-accent'} />
+                      <MiniBar value={cpu} color={cpu > 85 ? 'bg-danger' : 'bg-accent'} />
                       <div className="flex items-center justify-between text-[11px] text-text-muted">
                         <span className="flex items-center gap-1"><MemoryStick className="w-3 h-3" />RAM</span>
-                        <span>{telemetry.memPercent.toFixed(0)}%</span>
+                        <span>{mem.toFixed(0)}%</span>
                       </div>
-                      <MiniBar value={telemetry.memPercent} color={telemetry.memPercent > 90 ? 'bg-danger' : 'bg-info'} />
+                      <MiniBar value={mem} color={mem > 90 ? 'bg-danger' : 'bg-info'} />
                     </div>
+                    );
+                  })()
                   ) : (
                     <div className="hidden md:block w-32 shrink-0 text-[12px] text-text-muted italic">
                       Sem telemetria
