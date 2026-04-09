@@ -84,6 +84,18 @@ type inboundMsg struct {
 	RaftPeers []string          `json:"raftPeers,omitempty"` // peer IP addresses
 	// Policy hot-reload
 	Policy *policy.NodePolicy `json:"policy,omitempty"`
+
+	// ── Collective VM (Sprint 13) ─────────────────────────────────────────────
+	IsCollectiveMember bool                  `json:"isCollectiveMember,omitempty"`
+	CollectivePeers    []docker.CollectivePeer `json:"collectivePeers,omitempty"`
+	CpuMillicores      int                   `json:"cpuMillicores,omitempty"` // 2000 = 2.0 vCPUs
+	MemLimitMb         int                   `json:"memLimitMb,omitempty"`
+	VramLimitMb        int                   `json:"vramLimitMb,omitempty"`
+	MeshIP             string                `json:"meshIp,omitempty"`
+	MasterMeshIP       string                `json:"masterMeshIp,omitempty"`
+	Rank               int                   `json:"rank,omitempty"`
+	WorldSize          int                   `json:"worldSize,omitempty"`
+	AppType            string                `json:"appType,omitempty"` // "AI" | "WEB" | ""
 }
 
 // RunConnectionLoop dials the master and re-dials on any disconnect.
@@ -746,6 +758,62 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 		go func() {
 			TeardownMesh()
 			log.Println("[mesh] WireGuard overlay torn down")
+		}()
+
+	// ── Collective VM workload (Sprint 13.1) ─────────────────────────────────
+	case "start_collective_vm":
+		go func() {
+			send := func(v any) {
+				b, err := json.Marshal(v)
+				if err != nil {
+					return
+				}
+				select {
+				case out <- b:
+				case <-ctx.Done():
+				}
+			}
+			logFn := func(line string) {
+				send(map[string]any{"type": "log_line", "appId": msg.AppID, "message": line})
+			}
+			req := docker.CollectiveDeployRequest{
+				AppID:         msg.AppID,
+				AppSlug:       msg.AppSlug,
+				Image:         msg.Image,
+				Port:          msg.Port,
+				CpuMillicores: msg.CpuMillicores,
+				MemLimitMb:    msg.MemLimitMb,
+				VramLimitMb:   msg.VramLimitMb,
+				EnvVars:       msg.EnvVars,
+				MeshIP:        msg.MeshIP,
+				MasterMeshIP:  msg.MasterMeshIP,
+				Rank:          msg.Rank,
+				WorldSize:     msg.WorldSize,
+				Peers:         msg.CollectivePeers,
+				AppType:       msg.AppType,
+			}
+			if err := docker.RunCollectiveDeploy(ctx, req, logFn); err != nil {
+				send(map[string]any{
+					"type":    "log_line",
+					"appId":   msg.AppID,
+					"message": fmt.Sprintf("[collective] deploy error: %v", err),
+				})
+				return
+			}
+			send(map[string]any{
+				"type":  "collective_vm_started",
+				"appId": msg.AppID,
+				"rank":  msg.Rank,
+			})
+		}()
+
+	case "stop_collective_vm":
+		go func() {
+			if msg.AppSlug != "" {
+				if err := docker.StopCollectiveDeploy(ctx, msg.AppSlug); err != nil {
+					log.Printf("[collective] stop error: %v", err)
+				}
+			}
 		}()
 
 	// ── NAT / public-IP discovery (T10.1) ─────────────────────────────────────

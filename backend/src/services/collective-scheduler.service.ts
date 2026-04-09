@@ -237,6 +237,86 @@ export async function createCluster(appId: string, plan: ClusterPlan) {
   });
 }
 
+// ── Sprint 13.3: Hardware Fragmenter — distributeWorkload() ─────────────────
+
+export interface NodeAllocation {
+  nodeId:        string;
+  meshIp:        string;
+  role:          'LEADER' | 'WORKER';
+  rank:          number;
+  cpuMillicores: number; // vCPUs × 1000; enforced via --cpus flag
+  memLimitMb:    number; // enforced via --memory flag
+  vramLimitMb:   number; // > 0 → --gpus all + NCCL env injected
+  masterMeshIp:  string;
+  worldSize:     number;
+  peers:         { meshIp: string; rank: number }[];
+}
+
+export interface WorkloadDistribution {
+  allocations:        NodeAllocation[];
+  masterMeshIp:       string;
+  worldSize:          number;
+  totalAllocatedCpu:  number; // vCPUs
+  totalAllocatedRam:  number; // MB
+  totalAllocatedVram: number; // MB
+}
+
+/**
+ * Slices the requested CPU/RAM/VRAM across cluster nodes proportionally to
+ * each node's raw hardware capacity.  Each node receives an exact budget
+ * enforced by Docker cgroup flags (--cpus, --memory, --gpus).
+ *
+ * @param plan        - The cluster plan from planCluster()
+ * @param requested   - What the tenant actually needs in total
+ * @param appType     - "AI" triggers NCCL / Ray / DeepSpeed env injection
+ */
+export function distributeWorkload(
+  plan: ClusterPlan,
+  requested: { cpuCores: number; ramMb: number; vramMb: number },
+  appType: string = '',
+): WorkloadDistribution {
+  const nodes = plan.nodes;
+  if (nodes.length === 0) throw new Error('Cannot distribute across empty cluster.');
+
+  const totalCpu  = nodes.reduce((s, n) => s + n.cpuCores, 0);
+  const totalRam  = nodes.reduce((s, n) => s + n.ramMb, 0);
+  const totalVram = nodes.reduce((s, n) => s + (n.gpuMemoryMb ?? 0) * n.gpuCount, 0);
+
+  const masterMeshIp = nodes[0].meshIp; // LEADER = rank 0
+
+  const allocations: NodeAllocation[] = nodes.map((n, i) => {
+    const cpuShare  = totalCpu  > 0 ? (n.cpuCores / totalCpu)  * requested.cpuCores : 0;
+    const ramShare  = totalRam  > 0 ? (n.ramMb    / totalRam)  * requested.ramMb    : 0;
+    const nodeVram  = (n.gpuMemoryMb ?? 0) * n.gpuCount;
+    const vramShare = totalVram > 0 ? (nodeVram   / totalVram) * requested.vramMb   : 0;
+
+    return {
+      nodeId:        n.nodeId,
+      meshIp:        n.meshIp,
+      role:          n.role,
+      rank:          i,
+      // minimum 100 millicores / 512 MB to avoid starving the container
+      cpuMillicores: Math.max(100, Math.round(cpuShare * 1000)),
+      memLimitMb:    Math.max(512, Math.round(ramShare)),
+      vramLimitMb:   Math.round(vramShare),
+      masterMeshIp,
+      worldSize:     nodes.length,
+      peers: nodes
+        .filter((_, j) => j !== i)
+        .map((p, j) => ({ meshIp: p.meshIp, rank: j < i ? j : j + 1 })),
+    };
+  });
+
+  return {
+    allocations,
+    masterMeshIp,
+    worldSize:           nodes.length,
+    totalAllocatedCpu:   allocations.reduce((s, a) => s + a.cpuMillicores / 1000, 0),
+    totalAllocatedRam:   allocations.reduce((s, a) => s + a.memLimitMb, 0),
+    totalAllocatedVram:  allocations.reduce((s, a) => s + a.vramLimitMb, 0),
+  };
+}
+
 // ── Cluster telemetry aggregation (Sprint 13.3) ───────────────────────────────
 
 export interface ClusterTelemetry {

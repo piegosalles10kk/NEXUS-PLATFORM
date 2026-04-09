@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as collective from '../../services/collective-scheduler.service';
-import { sendWorkloadToNodes } from '../../services/workload-dispatch.service';
+import { dispatchCollectiveWorkload } from '../../services/workload-dispatch.service';
 import prisma from '../../config/database';
 import { getAgentSocket } from '../../services/agent-ws.service';
 
@@ -19,6 +19,7 @@ export async function createCluster(req: Request, res: Response, next: NextFunct
       name, slug, executionMode = 'AUTO', imageRef, envVars, port,
       totalCpuCores = 4, totalRamMb = 8192, totalVramMb = 0,
       tenantCountry, tenantState, tenantContinent, region, maxNodes,
+      appType = '',
     } = req.body as {
       name: string; slug: string;
       executionMode?: 'WASM' | 'MICROVM' | 'AUTO';
@@ -26,6 +27,7 @@ export async function createCluster(req: Request, res: Response, next: NextFunct
       totalCpuCores?: number; totalRamMb?: number; totalVramMb?: number;
       tenantCountry?: string; tenantState?: string; tenantContinent?: string;
       region?: string; maxNodes?: number;
+      appType?: string; // "AI" → NCCL/Ray/DeepSpeed injection
     };
 
     if (!name || !slug) {
@@ -64,7 +66,7 @@ export async function createCluster(req: Request, res: Response, next: NextFunct
       })),
     });
 
-    // 4. Push WireGuard mesh config + workload to each agent
+    // 4. Push WireGuard mesh config to each agent
     const peerList = plan.nodes.map(n => ({ nodeId: n.nodeId, meshIp: n.meshIp, pubKey: '' }));
 
     for (const node of plan.nodes) {
@@ -81,24 +83,38 @@ export async function createCluster(req: Request, res: Response, next: NextFunct
       }));
     }
 
-    // 5. Dispatch workload
-    sendWorkloadToNodes(app, plan.nodes.map(n => ({
-      id: n.nodeId, name: n.name, score: n.score, ipAddress: n.ipAddress,
-    }))).catch(err => console.error('[cluster] workload dispatch error:', err));
+    // 5. Slice hardware proportionally across nodes (Sprint 13.3)
+    const distribution = collective.distributeWorkload(
+      plan,
+      { cpuCores: totalCpuCores, ramMb: totalRamMb, vramMb: totalVramMb },
+      appType,
+    );
+
+    // 6. Dispatch collective workload with per-node cgroup budgets
+    dispatchCollectiveWorkload(app, distribution.allocations, appType)
+      .catch(err => console.error('[cluster] workload dispatch error:', err));
 
     res.status(201).json({
       status: 'success',
       data: {
         app,
         cluster: {
-          id:            cluster.id,
-          totalCpuCores: plan.totalCpuCores,
-          totalRamMb:    plan.totalRamMb,
-          totalVramMb:   plan.totalVramMb,
-          meshSubnet:    plan.meshSubnet,
-          proximityTier: plan.proximityTier,
-          nodeCount:     plan.nodes.length,
-          nodes: plan.nodes,
+          id:                  cluster.id,
+          totalCpuCores:       plan.totalCpuCores,
+          totalRamMb:          plan.totalRamMb,
+          totalVramMb:         plan.totalVramMb,
+          meshSubnet:          plan.meshSubnet,
+          proximityTier:       plan.proximityTier,
+          nodeCount:           plan.nodes.length,
+          nodes:               plan.nodes,
+        },
+        distribution: {
+          masterMeshIp:        distribution.masterMeshIp,
+          worldSize:           distribution.worldSize,
+          totalAllocatedCpu:   distribution.totalAllocatedCpu,
+          totalAllocatedRam:   distribution.totalAllocatedRam,
+          totalAllocatedVram:  distribution.totalAllocatedVram,
+          allocations:         distribution.allocations,
         },
       },
     });

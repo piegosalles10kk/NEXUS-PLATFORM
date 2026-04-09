@@ -109,6 +109,65 @@ export async function sendWorkloadToNodes(
   }
 }
 
+// ── Collective workload dispatch (Sprint 13) ──────────────────────────────────
+
+export interface CollectiveNodeTarget {
+  nodeId:        string;
+  meshIp:        string;
+  role:          'LEADER' | 'WORKER';
+  rank:          number;
+  cpuMillicores: number;
+  memLimitMb:    number;
+  vramLimitMb:   number;
+  masterMeshIp:  string;
+  worldSize:     number;
+  peers:         { meshIp: string; rank: number }[];
+}
+
+/**
+ * Dispatches `start_collective_vm` commands to each node in a ResourceCluster.
+ * Each node receives its exact hardware budget (cpuMillicores, memLimitMb,
+ * vramLimitMb) and the full NCCL/Ray/DeepSpeed env vars when appType === "AI".
+ */
+export async function dispatchCollectiveWorkload(
+  app: AppPayload,
+  allocations: CollectiveNodeTarget[],
+  appType = '',
+): Promise<void> {
+  for (const alloc of allocations) {
+    const ws = getAgentSocket(alloc.nodeId);
+    if (!ws) {
+      console.warn(`[dispatch] Collective: agent ${alloc.nodeId} not connected — skipping rank ${alloc.rank}`);
+      continue;
+    }
+
+    sendToAgent(ws, {
+      type:               'start_collective_vm',
+      action:             'start_collective_vm',
+      appId:              app.id,
+      appSlug:            app.slug,
+      image:              app.imageRef ?? 'ubuntu:22.04',
+      port:               app.port ?? 8080,
+      envVars:            app.envVars ?? {},
+      isCollectiveMember: true,
+      cpuMillicores:      alloc.cpuMillicores,
+      memLimitMb:         alloc.memLimitMb,
+      vramLimitMb:        alloc.vramLimitMb,
+      meshIp:             alloc.meshIp,
+      masterMeshIp:       alloc.masterMeshIp,
+      rank:               alloc.rank,
+      worldSize:          alloc.worldSize,
+      collectivePeers:    alloc.peers,
+      appType,
+    });
+
+    console.log(
+      `[dispatch] Collective VM rank=${alloc.rank}/${alloc.worldSize - 1} → node ${alloc.nodeId}` +
+      ` (${alloc.cpuMillicores}m CPU, ${alloc.memLimitMb}MB RAM, ${alloc.vramLimitMb}MB VRAM)`,
+    );
+  }
+}
+
 /**
  * Sends stop commands to all nodes currently assigned to an app.
  */
