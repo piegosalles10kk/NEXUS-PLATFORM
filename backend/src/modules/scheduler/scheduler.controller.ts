@@ -152,6 +152,55 @@ export async function removeApp(req: Request<{ id: string }>, res: Response, nex
   }
 }
 
+// ── PATCH /api/v1/scheduler/apps/:id ─────────────────────────────────────────
+/**
+ * Hot-resize a running DePIN app without downtime.
+ * Updates vCpu / ramMb / vramMb in DB then pushes UPDATE_RESOURCES to each
+ * assigned agent — the agent writes to cgroup v2 files directly (<1 s).
+ */
+export async function resizeApp(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const { vCpu, ramMb, vramMb } = req.body as {
+      vCpu?:   number;
+      ramMb?:  number;
+      vramMb?: number;
+    };
+
+    const userId = req.user?.role === 'ADM' ? undefined : req.user!.id;
+    const app = await scheduler.getApp(req.params.id, userId);
+    if (!app) {
+      res.status(404).json({ status: 'error', message: 'App not found.' });
+      return;
+    }
+
+    // Persist new resource limits
+    const updated = await (prisma.dePINApp as any).update({
+      where: { id: app.id },
+      data: {
+        ...(vCpu   !== undefined ? { vCpu }   : {}),
+        ...(ramMb  !== undefined ? { ramMb }  : {}),
+        ...(vramMb !== undefined ? { vramMb } : {}),
+      },
+    });
+
+    // Push live resize to all running agents for this app
+    const { sendResizeToNodes } = await import('../../services/workload-dispatch.service');
+    await sendResizeToNodes(updated, {
+      vCpu:   vCpu   ?? updated.vCpu,
+      ramMb:  ramMb  ?? updated.ramMb,
+      vramMb: vramMb ?? updated.vramMb,
+    }).catch(console.error);
+
+    // Notify frontend via Socket.io
+    const io = req.app.get('io');
+    io?.emit('app:resize', { appId: app.id, vCpu: updated.vCpu, ramMb: updated.ramMb, vramMb: updated.vramMb });
+
+    res.json({ status: 'success', data: { app: updated } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── POST /api/v1/scheduler/apps/:id/reassign ─────────────────────────────────
 /**
  * Replaces a specific offline node in an app's assignment list with a new best node.

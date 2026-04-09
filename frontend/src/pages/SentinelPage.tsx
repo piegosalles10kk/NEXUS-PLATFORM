@@ -10,13 +10,14 @@
  *   - Trilha de auditoria
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Shield, AlertTriangle, Users, Wallet, Trash2, Plus, Ban,
   CheckCircle, RefreshCw, Loader2, Lock, Activity, Eye,
-  ChevronRight, XCircle,
+  ChevronRight, XCircle, Terminal, Zap, Award,
 } from 'lucide-react';
 import api from '../services/api';
+import { io, Socket } from 'socket.io-client';
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 
@@ -38,6 +39,28 @@ interface AuditEntry {
   actor?:    { name: string; email: string } | null;
 }
 
+interface LogEntry {
+  level:     'error' | 'warn' | 'fatal';
+  message:   string;
+  nodeId?:   string;
+  timestamp: string;
+}
+
+interface BenchmarkNode {
+  id:              string;
+  name:            string;
+  status:          string;
+  infraType:       'SWARM' | 'CLOUD_MANAGED' | 'ON_PREMISE';
+  benchmarkTier:   'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | null;
+  benchmarkScore:  number | null;
+  lastBenchmarkAt: string | null;
+  country:         string | null;
+  cpuCores:        number;
+  ramMb:           number;
+  gpuCount:        number;
+  gpuModel:        string | null;
+}
+
 /* ── Colour helpers (inline — no Tailwind extension needed) ────────────────── */
 
 const S = {
@@ -57,6 +80,13 @@ const S = {
   input:        'w-full bg-[#0d0d0d] border border-[#2a2a2a] rounded px-3 py-2 text-[13px] text-[#d4d4d4] placeholder:text-[#555] focus:outline-none focus:border-[#444]',
   label:        'block text-[11px] text-[#666] mb-1',
   panicBtn:     'w-full py-3 font-bold text-[14px] tracking-widest uppercase bg-[#1a0000] hover:bg-[#290000] text-red-500 border-2 border-red-900 rounded-lg transition-colors',
+  stressBtn:    'w-full py-2.5 font-bold text-[13px] tracking-widest uppercase bg-[#0d1a00] hover:bg-[#142600] text-[#7ee040] border-2 border-[#2d5000] rounded-lg transition-colors',
+  tierColor: {
+    PLATINUM: 'text-[#e2e8f0] bg-[#1a1a2e] border-[#4a4a8a]',
+    GOLD:     'text-[#fde68a] bg-[#1a1500] border-[#7a6000]',
+    SILVER:   'text-[#d1d5db] bg-[#151515] border-[#3a3a3a]',
+    BRONZE:   'text-[#d97706] bg-[#140a00] border-[#7a4500]',
+  } as Record<string, string>,
 };
 
 /* ── Tenant Row ────────────────────────────────────────────────────────────── */
@@ -162,6 +192,77 @@ function PanicModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (s
   );
 }
 
+/* ── Log Terminal ──────────────────────────────────────────────────────────── */
+
+function LogTerminal({ logs, filterNodeId }: { logs: LogEntry[]; filterNodeId: string }) {
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const filtered = filterNodeId
+    ? logs.filter(l => l.nodeId === filterNodeId)
+    : logs;
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [filtered.length]);
+
+  const levelColor = (level: LogEntry['level']) =>
+    level === 'fatal' ? '#ff4444'
+    : level === 'error' ? '#ff7777'
+    : '#f59e0b';
+
+  return (
+    <div
+      className="h-52 overflow-y-auto rounded bg-[#050505] border border-[#1a1a1a] p-2 font-mono text-[11px] space-y-0.5"
+      style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a #0d0d0d' }}
+    >
+      {filtered.length === 0 ? (
+        <div className="flex items-center justify-center h-full text-[#333]">
+          Aguardando logs de erro...
+        </div>
+      ) : (
+        filtered.map((l, i) => (
+          <div key={i} className="flex gap-2 items-start">
+            <span className="text-[#444] shrink-0">{new Date(l.timestamp).toLocaleTimeString('pt-BR')}</span>
+            <span style={{ color: levelColor(l.level) }} className="shrink-0 font-bold">[{l.level.toUpperCase()}]</span>
+            {l.nodeId && <span className="text-[#5a5aaa] shrink-0">[{l.nodeId.slice(0, 8)}]</span>}
+            <span className="text-[#888] break-all">{l.message}</span>
+          </div>
+        ))
+      )}
+      <div ref={bottomRef}/>
+    </div>
+  );
+}
+
+/* ── Benchmark Table ───────────────────────────────────────────────────────── */
+
+function TierBadge({ tier }: { tier: string | null }) {
+  if (!tier) return <span className="text-[10px] text-[#444]">—</span>;
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold ${S.tierColor[tier] ?? S.tierColor.BRONZE}`}>
+      {tier}
+    </span>
+  );
+}
+
+function InfraTypeBadge({ type }: { type: string }) {
+  const colors: Record<string, string> = {
+    CLOUD_MANAGED: 'text-blue-400 border-blue-800/40 bg-blue-950/30',
+    ON_PREMISE:    'text-purple-400 border-purple-800/40 bg-purple-950/30',
+    SWARM:         'text-[#888] border-[#333] bg-[#111]',
+  };
+  const labels: Record<string, string> = {
+    CLOUD_MANAGED: 'CLOUD',
+    ON_PREMISE:    'ON-PREM',
+    SWARM:         'SWARM',
+  };
+  return (
+    <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${colors[type] ?? colors.SWARM}`}>
+      {labels[type] ?? type}
+    </span>
+  );
+}
+
 /* ── Main Page ─────────────────────────────────────────────────────────────── */
 
 export default function SentinelPage() {
@@ -169,6 +270,21 @@ export default function SentinelPage() {
   const [audit,   setAudit]       = useState<AuditEntry[]>([]);
   const [loading, setLoading]     = useState(true);
   const [showPanic, setShowPanic] = useState(false);
+
+  // Sprint 17.3 — Live log terminal
+  const [logs, setLogs]               = useState<LogEntry[]>([]);
+  const [logFilter, setLogFilter]     = useState('');
+  const socketRef                     = useRef<Socket | null>(null);
+
+  // Sprint 17.4 — Benchmark
+  const [benchNodes, setBenchNodes]   = useState<BenchmarkNode[]>([]);
+  const [benchLoading, setBenchLoad]  = useState(false);
+  const [runningBench, setRunningBench] = useState<string | null>(null);
+
+  // Sprint 17.5 — Stress test
+  const [stressLoading, setStressLoad] = useState(false);
+  const [stressMsg, setStressMsg]      = useState('');
+  const [countdown, setCountdown]      = useState<number | null>(null);
 
   // Mint form
   const [mintUserId,  setMintUserId]  = useState('');
@@ -190,17 +306,66 @@ export default function SentinelPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [tRes, aRes] = await Promise.all([
+      const [tRes, aRes, bRes] = await Promise.all([
         api.get('/v1/admin/tenants'),
         api.get('/v1/admin/audit?limit=20'),
+        api.get('/v1/admin/nodes/benchmarks').catch(() => ({ data: { data: { nodes: [] } } })),
       ]);
       setTenants(tRes.data.data.tenants);
       setAudit(aRes.data.data.logs);
+      setBenchNodes(bRes.data.data.nodes);
     } catch { /* errors shown inline */ }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  // Load recent backend logs
+  const loadLogs = async () => {
+    try {
+      const res = await api.get('/v1/admin/logs?limit=100');
+      setLogs(res.data.data.logs);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    load();
+    loadLogs();
+
+    // Real-time socket for logs, benchmark, stress test
+    const socket = io(window.location.origin, {
+      auth: { token: localStorage.getItem('token') },
+    });
+    socketRef.current = socket;
+
+    socket.on('sentinel:log', (entry: LogEntry) => {
+      setLogs(prev => [...prev.slice(-499), entry]);
+    });
+
+    socket.on('sentinel:benchmark_done', ({ nodeId }: { nodeId: string }) => {
+      setRunningBench(null);
+      // Refresh benchmark table
+      api.get('/v1/admin/nodes/benchmarks').then(r => setBenchNodes(r.data.data.nodes)).catch(() => {});
+    });
+
+    socket.on('sentinel:stress_test_started', (data: { dispatched: number; ntpEpochMs: number; durationSecs: number }) => {
+      const msUntilStart = data.ntpEpochMs - Date.now();
+      const totalMs = msUntilStart + data.durationSecs * 1000;
+      let remaining = Math.ceil(totalMs / 1000);
+      setCountdown(remaining);
+      const t = setInterval(() => {
+        remaining--;
+        setCountdown(remaining);
+        if (remaining <= 0) { clearInterval(t); setCountdown(null); }
+      }, 1000);
+    });
+
+    socket.on('sentinel:stress_result', () => {
+      // Each node sends its result — just refresh after a delay
+      setTimeout(() => api.get('/v1/admin/nodes/benchmarks')
+        .then(r => setBenchNodes(r.data.data.nodes)).catch(() => {}), 2000);
+    });
+
+    return () => { socket.disconnect(); };
+  }, []);
 
   async function handleBan(id: string) {
     await api.post(`/v1/admin/tenants/${id}/ban`);
@@ -256,6 +421,36 @@ export default function SentinelPage() {
     await api.post('/v1/admin/emergency-halt', { signature: sig });
     setShowPanic(false);
     alert('HALT enviado para todos os agentes.');
+  }
+
+  // Sprint 17.4
+  async function handleRunBenchmark(nodeId: string) {
+    setRunningBench(nodeId);
+    try {
+      await api.post(`/v1/admin/nodes/${nodeId}/benchmark`);
+    } catch (e: any) {
+      setRunningBench(null);
+      alert(e.response?.data?.message ?? 'Nó não conectado.');
+    }
+  }
+
+  async function handleSetInfraType(nodeId: string, infraType: string) {
+    await api.post(`/v1/admin/nodes/${nodeId}/infra-type`, { infraType });
+    setBenchNodes(prev => prev.map(n => n.id === nodeId ? { ...n, infraType: infraType as any } : n));
+  }
+
+  // Sprint 17.5
+  async function handleStressTest() {
+    setStressLoad(true); setStressMsg('');
+    try {
+      const res = await api.post('/v1/admin/stress-test', { durationSecs: 30, jitterMaxMs: 5000 });
+      const d = res.data.data;
+      setStressMsg(`✓ Stress test disparado para ${d.dispatched} nós. Início em 10s.`);
+    } catch (e: any) {
+      setStressMsg('✗ ' + (e.response?.data?.message ?? 'Erro'));
+    } finally {
+      setStressLoad(false);
+    }
   }
 
   const totalCredits = tenants.reduce((s, t) => s + (t.creditUsd ?? 0), 0);
@@ -442,6 +637,156 @@ export default function SentinelPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* ── Sprint 17.3 — Log Terminal ─────────────────────────────── */}
+          <div className={S.card}>
+            <div className={S.cardHead}>
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-[#7ee040]" />
+                <p className="text-[13px] font-semibold text-white">Terminal de Logs — Caixa Preta</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  className={S.input + ' w-40 text-[11px] py-1'}
+                  placeholder="Filtrar por nodeId..."
+                  value={logFilter}
+                  onChange={e => setLogFilter(e.target.value)}
+                />
+                <button onClick={loadLogs} className={S.btnGhost}>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div className="p-3">
+              <LogTerminal logs={logs} filterNodeId={logFilter.trim()}/>
+            </div>
+          </div>
+
+          {/* ── Sprint 17.4 — Benchmark Engine ────────────────────────── */}
+          <div className={S.card}>
+            <div className={S.cardHead}>
+              <div className="flex items-center gap-2">
+                <Award className="w-4 h-4 text-yellow-400" />
+                <div>
+                  <p className="text-[13px] font-semibold text-white">Hybrid Benchmark Engine — Selos de Qualidade</p>
+                  <p className="text-[11px] text-[#555]">5 probes: CPU SHA-256, RAM, Storage IOPS, GPU FP16, Mesh WireGuard</p>
+                </div>
+              </div>
+            </div>
+            {benchNodes.length === 0 ? (
+              <div className="flex items-center justify-center h-20 text-[12px] text-[#555]">
+                Nenhum nó com dados de benchmark. Dispare um benchmark abaixo.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px]">
+                  <thead>
+                    <tr className="border-b border-[#1a1a1a] text-[10px] text-[#555] uppercase tracking-widest">
+                      <th className="px-4 py-2 text-left">Nó</th>
+                      <th className="px-2 py-2 text-left">Tipo</th>
+                      <th className="px-2 py-2 text-center">Tier</th>
+                      <th className="px-2 py-2 text-center">Score</th>
+                      <th className="px-2 py-2 text-left">CPU/RAM/GPU</th>
+                      <th className="px-2 py-2 text-center">Último Bench</th>
+                      <th className="px-2 py-2 text-center">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#111]">
+                    {benchNodes.map(n => (
+                      <tr key={n.id} className="hover:bg-[#141414]">
+                        <td className="px-4 py-2.5">
+                          <div className="font-semibold text-white">{n.name}</div>
+                          <div className="text-[10px] text-[#444]">{n.country ?? '?'}</div>
+                        </td>
+                        <td className="px-2 py-2.5">
+                          <InfraTypeBadge type={n.infraType}/>
+                        </td>
+                        <td className="px-2 py-2.5 text-center">
+                          <TierBadge tier={n.benchmarkTier}/>
+                        </td>
+                        <td className="px-2 py-2.5 text-center text-white font-mono">
+                          {n.benchmarkScore != null ? n.benchmarkScore.toFixed(1) : '—'}
+                        </td>
+                        <td className="px-2 py-2.5 text-[#666]">
+                          {n.cpuCores}c · {Math.round(n.ramMb/1024)}GB
+                          {n.gpuCount > 0 && <span className="text-purple-400 ml-1">GPU×{n.gpuCount}</span>}
+                        </td>
+                        <td className="px-2 py-2.5 text-center text-[#444]">
+                          {n.lastBenchmarkAt
+                            ? new Date(n.lastBenchmarkAt).toLocaleDateString('pt-BR')
+                            : '—'}
+                        </td>
+                        <td className="px-2 py-2.5 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => handleRunBenchmark(n.id)}
+                              disabled={runningBench === n.id}
+                              className={S.btnGhost + ' text-[10px] px-2 py-1'}
+                            >
+                              {runningBench === n.id
+                                ? <Loader2 className="w-3 h-3 animate-spin inline"/>
+                                : <Zap className="w-3 h-3 inline"/>}
+                            </button>
+                            <select
+                              value={n.infraType}
+                              onChange={e => handleSetInfraType(n.id, e.target.value)}
+                              className="bg-[#0d0d0d] border border-[#2a2a2a] rounded px-1 py-0.5 text-[10px] text-[#aaa]"
+                            >
+                              <option value="SWARM">SWARM</option>
+                              <option value="CLOUD_MANAGED">CLOUD</option>
+                              <option value="ON_PREMISE">ON-PREM</option>
+                            </select>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* ── Sprint 17.5 — Global Swarm Stress Test ────────────────── */}
+          <div className={S.card + ' border-[#2d5000]'}>
+            <div className={S.cardHead + ' border-[#2d5000]'}>
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-[#7ee040]" />
+                <div>
+                  <p className="text-[13px] font-semibold text-white">Global Swarm Stress Test — Modo Deus</p>
+                  <p className="text-[11px] text-[#555]">
+                    Dispara benchmark em TODOS os nós conectados simultaneamente (NTP-synced, jitter 0–5 s).
+                  </p>
+                </div>
+              </div>
+              {countdown !== null && (
+                <div className="text-[12px] text-[#7ee040] font-mono font-bold animate-pulse">
+                  T-{countdown}s
+                </div>
+              )}
+            </div>
+            <div className="p-4 space-y-3">
+              {stressMsg && (
+                <p className={`text-[12px] font-mono ${stressMsg.startsWith('✓') ? 'text-[#7ee040]' : 'text-red-400'}`}>
+                  {stressMsg}
+                </p>
+              )}
+              <p className="text-[11px] text-[#555]">
+                Duração: 30 s · Jitter máximo: 5 s · Agrega métricas de todos os nós para valuation da rede.
+                Resultados aparecem na tabela de benchmark em tempo real.
+              </p>
+              <button
+                onClick={handleStressTest}
+                disabled={stressLoading || countdown !== null}
+                className={S.stressBtn + ' flex items-center justify-center gap-2 disabled:opacity-50'}
+              >
+                {stressLoading
+                  ? <><Loader2 className="w-4 h-4 animate-spin"/>Despachando…</>
+                  : countdown !== null
+                    ? <><Zap className="w-4 h-4"/>TESTE EM ANDAMENTO — T-{countdown}s</>
+                    : <><Zap className="w-4 h-4"/>DISPARAR STRESS TEST GLOBAL</>}
+              </button>
+            </div>
           </div>
 
         </div>

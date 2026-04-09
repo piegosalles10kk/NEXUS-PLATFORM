@@ -33,6 +33,7 @@ import { startFailoverMonitor } from './services/failover.service';
 import { trafficManager } from './modules/gateway/traffic.middleware';
 import { dynamicProxy } from './modules/gateway/proxy.service';
 import { startMonitoring, stopMonitoring } from './services/monitoring.service';
+import './services/log-streamer.service'; // Sprint 17.3 — intercept errors → sentinel:log
 import { startDockerWatcher } from './services/docker-watcher.service';
 import { initGatewayConf } from './services/nginx-config.service';
 

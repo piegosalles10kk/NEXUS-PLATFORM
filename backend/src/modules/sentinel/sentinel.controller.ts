@@ -16,8 +16,14 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import prisma from '../../config/database';
 import { writeAudit, readAuditLogs } from '../../services/audit.service';
-import { getIo } from '../../services/agent-ws.service';
+import { getIo, getAgentSocket, getConnectedNodeIds } from '../../services/agent-ws.service';
 import { env } from '../../config/env';
+import {
+  triggerBenchmark,
+  triggerGlobalStressTest,
+  listNodeBenchmarks,
+} from '../../services/benchmark.service';
+import { recentBackendLogs } from '../../services/log-streamer.service';
 
 // ── Tenant management ─────────────────────────────────────────────────────────
 
@@ -246,6 +252,102 @@ export async function getAuditLogs(req: Request, res: Response, next: NextFuncti
     const action = req.query.action as any;
 
     const logs = await readAuditLogs({ action, limit, offset });
+    res.json({ status: 'success', data: { logs } });
+  } catch (err) { next(err); }
+}
+
+// ── Sprint 17.4 — Benchmark Engine ───────────────────────────────────────────
+
+/** GET /admin/nodes/benchmarks — list all nodes with benchmark data */
+export async function listBenchmarks(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const nodes = await listNodeBenchmarks();
+    res.json({ status: 'success', data: { nodes } });
+  } catch (err) { next(err); }
+}
+
+/** POST /admin/nodes/:id/benchmark — trigger benchmark on a single node */
+export async function runBenchmark(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const { id: nodeId } = req.params;
+    const ok = await triggerBenchmark(nodeId);
+    if (!ok) {
+      res.status(503).json({ status: 'error', message: 'Node not connected.' });
+      return;
+    }
+    await writeAudit({ actorId: req.user!.id, action: 'BENCHMARK', targetId: nodeId, ipAddress: req.ip });
+    res.json({ status: 'success', message: 'Benchmark dispatched.' });
+  } catch (err) { next(err); }
+}
+
+/** POST /admin/nodes/:id/infra-type — reclassify node infra type */
+export async function setInfraType(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const { infraType } = req.body as { infraType: 'SWARM' | 'CLOUD_MANAGED' | 'ON_PREMISE' };
+    if (!['SWARM', 'CLOUD_MANAGED', 'ON_PREMISE'].includes(infraType)) {
+      res.status(400).json({ status: 'error', message: 'Invalid infraType.' });
+      return;
+    }
+    const node = await (prisma.node as any).update({
+      where: { id: req.params.id },
+      data:  { infraType },
+      select: { id: true, name: true, infraType: true },
+    });
+    res.json({ status: 'success', data: { node } });
+  } catch (err) { next(err); }
+}
+
+// ── Sprint 17.5 — Global Swarm Stress Test ────────────────────────────────────
+
+/**
+ * POST /admin/stress-test
+ * Body: { durationSecs?, jitterMaxMs? }
+ *
+ * Dispatches `stress_test` to ALL connected nodes simultaneously.
+ * Uses NTP-epoch coordination: all agents wait until `ntpEpochMs` then fire.
+ * Jitter is applied per-agent to avoid synchronized DDoS on the master.
+ */
+export async function globalStressTest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const durationSecs = parseInt(req.body.durationSecs ?? '30', 10);
+    const jitterMaxMs  = parseInt(req.body.jitterMaxMs  ?? '5000', 10);
+
+    // Schedule test to start 10 seconds from now (gives agents time to prepare)
+    const ntpEpochMs = Date.now() + 10_000;
+
+    const nodeIds = getConnectedNodeIds();
+    const dispatched = await triggerGlobalStressTest(
+      { durationSecs, jitterMaxMs, ntpEpochMs },
+      nodeIds,
+    );
+
+    await writeAudit({
+      actorId:   req.user!.id,
+      action:    'STRESS_TEST',
+      targetId:  'ALL_AGENTS',
+      ipAddress: req.ip,
+      payload:   { nodeCount: dispatched, durationSecs, ntpEpochMs },
+    });
+
+    // Broadcast to frontend so Sentinel dashboard can show countdown
+    getIo()?.emit('sentinel:stress_test_started', {
+      dispatched,
+      ntpEpochMs,
+      durationSecs,
+      startedBy: req.user!.email,
+    });
+
+    res.json({ status: 'success', data: { dispatched, ntpEpochMs, durationSecs } });
+  } catch (err) { next(err); }
+}
+
+// ── Sprint 17.3 — Backend error log stream ────────────────────────────────────
+
+/** GET /admin/logs — returns last N backend error logs */
+export async function getRecentLogs(req: Request, res: Response, next: NextFunction) {
+  try {
+    const limit = parseInt(req.query.limit as string ?? '100', 10);
+    const logs  = recentBackendLogs(limit);
     res.json({ status: 'success', data: { logs } });
   } catch (err) { next(err); }
 }

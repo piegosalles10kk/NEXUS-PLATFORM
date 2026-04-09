@@ -169,6 +169,36 @@ export async function dispatchCollectiveWorkload(
 }
 
 /**
+ * Hot-resize: sends UPDATE_RESOURCES to every RUNNING agent for an app.
+ * The agent writes to cgroup v2 files directly — no container restart needed.
+ */
+export async function sendResizeToNodes(
+  app: AppPayload,
+  resources: { vCpu: number; ramMb: number; vramMb: number },
+): Promise<void> {
+  const assignments = app.assignments ?? [];
+  for (const assignment of assignments) {
+    const ws = getAgentSocket(assignment.nodeId);
+    if (!ws) continue;
+
+    sendToAgent(ws, {
+      type:          'update_resources',
+      action:        'update_resources',
+      appId:         app.id,
+      appSlug:       app.slug,
+      cpuMillicores: resources.vCpu,   // already in millicores from DB
+      memLimitMb:    resources.ramMb,
+      vramLimitMb:   resources.vramMb,
+    });
+
+    console.log(
+      `[dispatch] Resize → node ${assignment.nodeId}: ` +
+      `${resources.vCpu}m CPU, ${resources.ramMb}MB RAM, ${resources.vramMb}MB VRAM`,
+    );
+  }
+}
+
+/**
  * Sends stop commands to all nodes currently assigned to an app.
  */
 export async function sendStopToNodes(app: AppPayload): Promise<void> {

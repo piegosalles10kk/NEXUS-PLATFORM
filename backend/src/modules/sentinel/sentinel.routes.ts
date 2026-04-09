@@ -26,4 +26,13 @@ router.post('/emergency-halt',   ...guard, ctrl.emergencyHalt);
 // Audit trail
 router.get( '/audit',            ...guard, ctrl.getAuditLogs);
 
+// Sprint 17 — Benchmark & Stress Test
+router.get(  '/nodes/benchmarks',       ...guard, ctrl.listBenchmarks);
+router.post( '/nodes/:id/benchmark',    ...guard, ctrl.runBenchmark);
+router.post( '/nodes/:id/infra-type',   ...guard, ctrl.setInfraType);
+router.post( '/stress-test',            ...guard, ctrl.globalStressTest);
+
+// Sprint 17.3 — Backend log stream (recent errors)
+router.get(  '/logs',                   ...guard, ctrl.getRecentLogs);
+
 export default router;

@@ -295,14 +295,42 @@ model Node {
   owner            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   tenantId         String?          @map("tenant_id")
   tenant           Tenant?          @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  // Sprint 17 — Infrastructure type & benchmark quality tier
+  infraType        InfraType        @default(SWARM) @map("infra_type")
+  benchmarkTier    BenchmarkTier?   @map("benchmark_tier")
+  benchmarkScore   Float?           @map("benchmark_score") // composite score 0-100+
+  lastBenchmarkAt  DateTime?        @map("last_benchmark_at")
   lastPing         DateTime         @updatedAt @map("last_ping")
   createdAt        DateTime         @default(now()) @map("created_at")
   projects         Project[]
   assignments      NodeAssignment[]
   clusterMembers   ClusterMembership[]
   policy           NodePolicy?
+  benchmarks       NodeBenchmark[]
 
   @@map("nodes")
+}
+
+// ─── Node Benchmark Records (Sprint 17.4) ────────────────────────────────────
+
+model NodeBenchmark {
+  id            String    @id @default(uuid())
+  nodeId        String    @map("node_id")
+  node          Node      @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  // 5-stage probe results
+  cpuGflops     Float     @default(0) @map("cpu_gflops")       // SHA-256 parallel
+  ramGbps       Float     @default(0) @map("ram_gbps")         // block read/write
+  storageIops   Float     @default(0) @map("storage_iops")     // random I/O
+  gpuTflops     Float     @default(0) @map("gpu_tflops")       // FP16 tensors (0 = no GPU)
+  meshLatencyMs Float     @default(0) @map("mesh_latency_ms")  // ping via nexus0
+  meshBandwidthMbps Float @default(0) @map("mesh_bandwidth_mbps")
+  // Derived
+  compositeScore Float    @default(0) @map("composite_score")
+  tier          BenchmarkTier @default(BRONZE)
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([nodeId, createdAt])
+  @@map("node_benchmarks")
 }
 
 // ─── Collective Resource Clusters (Sprint 11) ─────────────────────────────────
@@ -386,6 +414,10 @@ model DePINApp {
   region         String?
   customDomain   String?          @unique @map("custom_domain")
   sslStatus      SslStatus?       @map("ssl_status")
+  // Sprint 17.1 — live resource allocation (hot-resize via cgroup v2)
+  vCpu           Int              @default(0) @map("v_cpu")       // millicores (1000 = 1 vCPU)
+  ramMb          Int              @default(0) @map("ram_mb")
+  vramMb         Int              @default(0) @map("vram_mb")
   priceMultiplier Float           @default(1.0) @map("price_multiplier")
   // Surge price locked at deploy time — consumer always pays this, provider gets bonus if surge rises
   lockedHourlyUsd Float          @default(0) @map("locked_hourly_usd")
@@ -536,6 +568,23 @@ enum AuditAction {
   CREATE_INVITE
   NODE_TERMINATE
   APP_REMOVE
+  BENCHMARK
+  STRESS_TEST
+}
+
+// ─── Node Infrastructure Classification (Sprint 17) ──────────────────────────
+
+enum InfraType {
+  SWARM           // DePIN community node (default)
+  CLOUD_MANAGED   // Nexus-owned physical server
+  ON_PREMISE      // Enterprise on-prem node
+}
+
+enum BenchmarkTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
 }
 
 model AuditLog {

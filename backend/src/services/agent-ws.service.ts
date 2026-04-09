@@ -78,6 +78,13 @@ export function getAgentSocket(nodeId: string): WebSocket | undefined {
   return agentSockets.get(nodeId);
 }
 
+/** Returns all nodeIds with an OPEN WebSocket connection to the master. */
+export function getConnectedNodeIds(): string[] {
+  return Array.from(agentSockets.entries())
+    .filter(([, ws]) => ws.readyState === WebSocket.OPEN)
+    .map(([nodeId]) => nodeId);
+}
+
 /**
  * Sends a remove command to the named agent to stop and delete a container.
  * Fire-and-forget — rejects if the agent is offline.
@@ -561,6 +568,38 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
             console.log(`🔴 [agent-ws] Route deregistered: ${routePath}`);
             io.emit('gateway:route_updated', { routePath, isActive: false });
           }).catch(console.error);
+          break;
+        }
+
+        // Sprint 17.4 — Benchmark result from agent
+        case 'benchmark_result': {
+          import('./benchmark.service').then(({ saveBenchmarkResult }) =>
+            saveBenchmarkResult({
+              nodeId,
+              cpuGflops:         msg.cpuGflops         ?? 0,
+              ramGbps:           msg.ramGbps            ?? 0,
+              storageIops:       msg.storageIops        ?? 0,
+              gpuTflops:         msg.gpuTflops          ?? 0,
+              meshLatencyMs:     msg.meshLatencyMs      ?? 0,
+              meshBandwidthMbps: msg.meshBandwidthMbps  ?? 0,
+            })
+          ).then(() => {
+            io.emit('sentinel:benchmark_done', { nodeId });
+          }).catch(console.error);
+          break;
+        }
+
+        // Sprint 17.5 — Stress test result from agent (aggregate metrics)
+        case 'stress_test_result': {
+          io.emit('sentinel:stress_result', { nodeId, ...msg });
+          break;
+        }
+
+        // Sprint 17.3 — Error log tagged to a node
+        case 'node_error_log': {
+          import('./log-streamer.service').then(({ pushNodeLog }) =>
+            pushNodeLog(nodeId, msg.message ?? 'unknown error')
+          ).catch(() => {});
           break;
         }
 

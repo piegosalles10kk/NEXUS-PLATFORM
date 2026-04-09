@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/10kk/agent/internal/benchmark"
 	"github.com/10kk/agent/internal/docker"
 	agentfs "github.com/10kk/agent/internal/fs"
 	"github.com/10kk/agent/internal/metrics"
@@ -96,6 +97,11 @@ type inboundMsg struct {
 	Rank               int                   `json:"rank,omitempty"`
 	WorldSize          int                   `json:"worldSize,omitempty"`
 	AppType            string                `json:"appType,omitempty"` // "AI" | "WEB" | ""
+
+	// ── Sprint 17.5 — Stress Test / Benchmark fields ──────────────────────────
+	NtpEpochMs   int64 `json:"ntpEpochMs,omitempty"`  // UTC ms — coordinated start time
+	DurationSecs int   `json:"durationSecs,omitempty"`
+	JitterMaxMs  int   `json:"jitterMaxMs,omitempty"`
 }
 
 // RunConnectionLoop dials the master and re-dials on any disconnect.
@@ -711,6 +717,21 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 			}
 		}()
 
+	// ── Sprint 17.1: Hot-Resize — update cgroup v2 limits without restart ────────
+	case "update_resources":
+		go func() {
+			if msg.AppSlug == "" {
+				log.Printf("[resize] update_resources: missing appSlug")
+				return
+			}
+			if err := HotResizeCgroup(msg.AppSlug, msg.CpuMillicores, msg.MemLimitMb); err != nil {
+				log.Printf("[resize] cgroup update failed for %s: %v", msg.AppSlug, err)
+			} else {
+				log.Printf("[resize] %s → %dm CPU, %dMB RAM",
+					msg.AppSlug, msg.CpuMillicores, msg.MemLimitMb)
+			}
+		}()
+
 	// ── Policy hot-reload — reconfigure cgroups/Job Objects without restart ──────
 	case "update_policy":
 		if msg.Policy != nil {
@@ -856,6 +877,64 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 					log.Printf("[collective] stop error: %v", err)
 				}
 			}
+		}()
+
+	// ── Sprint 17.4: Hybrid Benchmark Engine ─────────────────────────────────────
+	case "run_benchmark":
+		go func() {
+			send := func(v any) {
+				b, _ := json.Marshal(v)
+				select {
+				case out <- b:
+				case <-ctx.Done():
+				}
+			}
+			log.Println("[benchmark] 5-stage probe starting...")
+			result := benchmark.RunBenchmark(ctx)
+			send(map[string]any{
+				"type":              "benchmark_result",
+				"cpuGflops":         result.CPUGflops,
+				"ramGbps":           result.RAMGbps,
+				"storageIops":       result.StorageIOPS,
+				"gpuTflops":         result.GPUTflops,
+				"meshLatencyMs":     result.MeshLatencyMs,
+				"meshBandwidthMbps": result.MeshBandwidthMbps,
+			})
+			log.Printf("[benchmark] done: CPU=%.2fGF RAM=%.2fGB/s IOPS=%.0f GPU=%.2fTF mesh=%.1fms",
+				result.CPUGflops, result.RAMGbps, result.StorageIOPS,
+				result.GPUTflops, result.MeshLatencyMs)
+		}()
+
+	// ── Sprint 17.5: Global Swarm Stress Test ─────────────────────────────────────
+	case "stress_test":
+		go func() {
+			send := func(v any) {
+				b, _ := json.Marshal(v)
+				select {
+				case out <- b:
+				case <-ctx.Done():
+				}
+			}
+			// Wait until NTP epoch with random jitter so all agents don't hit master at once
+			now := time.Now().UnixMilli()
+			jitter := benchmark.RandomJitter(msg.JitterMaxMs)
+			startAt := msg.NtpEpochMs + jitter
+			if startAt > now {
+				waitMs := startAt - now
+				select {
+				case <-time.After(time.Duration(waitMs) * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+			}
+			result := benchmark.RunStressTest(ctx, msg.DurationSecs)
+			send(map[string]any{
+				"type":         "stress_test_result",
+				"cpuGflops":   result.CPUGflops,
+				"ramGbps":     result.RAMGbps,
+				"storageIops": result.StorageIOPS,
+				"durationSecs": result.DurationSecs,
+			})
 		}()
 
 	// ── NAT / public-IP discovery (T10.1) ─────────────────────────────────────

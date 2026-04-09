@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Network, ArrowLeft, Cpu, MemoryStick, Activity,
   Wifi, WifiOff, Loader2, RefreshCw, Globe,
-  CheckCircle, XCircle, Clock, Link2,
+  CheckCircle, XCircle, Clock, Link2, Zap,
 } from 'lucide-react';
 import api from '../services/api';
 import { io, Socket } from 'socket.io-client';
@@ -32,6 +32,9 @@ interface DePINApp {
   customDomain?: string;
   sslStatus?: 'PENDING' | 'ACTIVE' | 'FAILED';
   assignments: Assignment[];
+  vCpu:   number;
+  ramMb:  number;
+  vramMb: number;
 }
 
 interface LiveTelemetry {
@@ -80,6 +83,67 @@ function MiniBar({ value, color }: { value: number; color: string }) {
   );
 }
 
+// ── Hot-Resize Card ───────────────────────────────────────────────────────────
+
+function HotResizeCard({ appId, initial }: { appId: string; initial: { vCpu: number; ramMb: number; vramMb: number } }) {
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [ok, setOk]     = useState(false);
+  const [err, setErr]   = useState('');
+
+  const handleResize = async () => {
+    setSaving(true); setOk(false); setErr('');
+    try {
+      await api.patch(`/v1/scheduler/apps/${appId}`, form);
+      setOk(true);
+      setTimeout(() => setOk(false), 3000);
+    } catch (e: any) {
+      setErr(e.response?.data?.message ?? 'Erro ao redimensionar.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader
+        title="Hot-Resize"
+        description="Ajuste CPU/RAM sem derrubar o workload. Cgroup v2 atualiza em < 1 s."
+        icon={<Zap className="w-4 h-4"/>}
+      />
+      <CardDivider />
+      <div className="space-y-4">
+        {err && <p className="text-danger text-[13px]">{err}</p>}
+        {ok  && <p className="text-success text-[13px]">Recursos atualizados sem downtime.</p>}
+
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { label: 'CPU (millicores)', key: 'vCpu',  min: 100,  max: 64000, step: 100,  suffix: 'm' },
+            { label: 'RAM (MB)',         key: 'ramMb', min: 128,  max: 524288, step: 128, suffix: 'MB' },
+            { label: 'VRAM (MB)',        key: 'vramMb',min: 0,   max: 819200, step: 1024, suffix: 'MB' },
+          ].map(f => (
+            <div key={f.key}>
+              <label className="block text-[12px] text-text-muted mb-1">{f.label}</label>
+              <input
+                type="number" min={f.min} max={f.max} step={f.step}
+                value={(form as any)[f.key]}
+                onChange={e => setForm(prev => ({ ...prev, [f.key]: Number(e.target.value) }))}
+                className="input-field text-[13px] font-mono"
+              />
+              <span className="text-[10px] text-text-muted">{(form as any)[f.key].toLocaleString()} {f.suffix}</span>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={handleResize} disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent-light disabled:opacity-50 text-white text-[13px] font-semibold transition-colors">
+          {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin"/>Aplicando…</> : <><Zap className="w-3.5 h-3.5"/>Aplicar sem downtime</>}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
 /* ── Page ──────────────────────────────────────────────────── */
 export default function DePINClusterView() {
   const { id } = useParams<{ id: string }>();
@@ -125,6 +189,11 @@ export default function DePINClusterView() {
 
     socket.on('node:offline', ({ nodeId }: { nodeId: string }) => {
       setOnlineNodes(prev => { const n = new Set(prev); n.delete(nodeId); return n; });
+    });
+
+    // Hot-resize confirmation — refresh app state
+    socket.on('app:resize', ({ appId }: { appId: string }) => {
+      if (appId === app.id) load();
     });
 
     return () => { socket.disconnect(); };
@@ -267,6 +336,12 @@ export default function DePINClusterView() {
           </div>
         )}
       </Card>
+
+      {/* Hot-Resize */}
+      <HotResizeCard
+        appId={app.id}
+        initial={{ vCpu: app.vCpu || 1000, ramMb: app.ramMb || 512, vramMb: app.vramMb || 0 }}
+      />
 
       {/* Domains section */}
       <Card>
