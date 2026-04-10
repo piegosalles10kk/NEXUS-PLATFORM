@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Shield, Users, Server, Network, Globe, Settings,
-  Activity, Cpu, Loader2, ArrowRight, Radio, Cloud,
-  BarChart3, Zap, Lock, AlertTriangle,
+  Activity, Loader2, ArrowRight, Radio, Cloud,
+  BarChart3, Lock, AlertTriangle,
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
