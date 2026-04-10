@@ -11,8 +11,9 @@ router.get('/nodes',              authenticate, authorize('ADM', 'TECNICO'), ctr
 // App lifecycle
 router.post(  '/deploy',          authenticate, authorize('ADM', 'TECNICO'), ctrl.deployApp);
 router.get(   '/apps',            authenticate, authorize('ADM', 'TECNICO'), ctrl.listApps);
-router.get(   '/apps/:id',        authenticate, authorize('ADM', 'TECNICO'), ctrl.getApp);
-router.patch( '/apps/:id',        authenticate, authorize('ADM', 'TECNICO'), ctrl.resizeApp);
+router.get(   '/apps/:id',             authenticate, authorize('ADM', 'TECNICO'), ctrl.getApp);
+router.get(   '/apps/:id/telemetry/net', authenticate, ctrl.getAppNetTelemetry); // all roles — aliases only
+router.patch( '/apps/:id',             authenticate, authorize('ADM', 'TECNICO'), ctrl.resizeApp);
 router.delete('/apps/:id',        authenticate, authorize('ADM', 'TECNICO'), ctrl.removeApp);
 router.post(  '/apps/:id/reassign', authenticate, authorize('ADM'),          ctrl.reassignNode);
 

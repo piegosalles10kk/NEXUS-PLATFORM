@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Network, ArrowLeft, Cpu, MemoryStick, Activity,
   Wifi, WifiOff, Loader2, RefreshCw, Globe,
-  CheckCircle, XCircle, Clock, Link2, Zap,
+  CheckCircle, XCircle, Clock, Zap, Star,
 } from 'lucide-react';
 import api from '../services/api';
 import { io, Socket } from 'socket.io-client';
@@ -80,6 +80,148 @@ function MiniBar({ value, color }: { value: number; color: string }) {
         style={{ width: `${Math.min(value, 100)}%` }}
       />
     </div>
+  );
+}
+
+// ── Constellation Widget (Task 17.4) ─────────────────────────────────────────
+// Shows the cluster as a star-named force-graph. Node IPs/names are hidden.
+
+interface ConstellationNode { id: string; alias: string; status: string }
+interface ConstellationEdge { from: string; to: string; type: 'net' | 'fail' }
+
+const CW = 480; const CH = 260; const CCX = CW / 2; const CCY = CH / 2;
+
+function ConstellationWidget({ appId }: { appId: string }) {
+  const [nodes, setNodes] = useState<ConstellationNode[]>([]);
+  const [edges, setEdges] = useState<ConstellationEdge[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const physRef   = useRef<{ id: string; alias: string; status: string; x: number; y: number; vx: number; vy: number }[]>([]);
+  const frameRef  = useRef(0);
+  const tickRef   = useRef(0);
+
+  useEffect(() => {
+    api.get(`/v1/scheduler/apps/${appId}/telemetry/net`)
+      .then(r => { setNodes(r.data.data.nodes); setEdges(r.data.data.edges); })
+      .catch(() => {});
+  }, [appId]);
+
+  useEffect(() => {
+    const angle = (2 * Math.PI) / Math.max(nodes.length, 1);
+    physRef.current = nodes.map((n, i) => ({
+      ...n,
+      x: CCX + Math.cos(i * angle) * 100,
+      y: CCY + Math.sin(i * angle) * 90,
+      vx: 0, vy: 0,
+    }));
+  }, [nodes]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || nodes.length === 0) return;
+    const ctx = canvas.getContext('2d')!;
+
+    const tick = () => {
+      tickRef.current++;
+      const ps = physRef.current;
+
+      // Physics
+      for (let i = 0; i < ps.length; i++) {
+        ps[i].vx += (CCX - ps[i].x) * 0.003;
+        ps[i].vy += (CCY - ps[i].y) * 0.003;
+        for (let j = 0; j < ps.length; j++) {
+          if (i === j) continue;
+          const dx = ps[i].x - ps[j].x; const dy = ps[i].y - ps[j].y;
+          const d = Math.sqrt(dx*dx + dy*dy) || 1;
+          const f = 800 / (d * d);
+          ps[i].vx += (dx/d)*f; ps[i].vy += (dy/d)*f;
+        }
+        ps[i].vx *= 0.88; ps[i].vy *= 0.88;
+        ps[i].x = Math.max(22, Math.min(CW - 22, ps[i].x + ps[i].vx));
+        ps[i].y = Math.max(22, Math.min(CH - 22, ps[i].y + ps[i].vy));
+      }
+
+      // Background
+      ctx.fillStyle = 'rgba(2,2,8,0.92)'; ctx.fillRect(0, 0, CW, CH);
+
+      // Subtle star field
+      if (tickRef.current === 1) {
+        for (let s = 0; s < 60; s++) {
+          const sx = Math.random() * CW; const sy = Math.random() * CH;
+          ctx.beginPath(); ctx.arc(sx, sy, 0.6, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255,255,255,${0.1 + Math.random()*0.2})`; ctx.fill();
+        }
+      }
+
+      // Edges
+      const nodeMap = new Map(ps.map(p => [p.id, p]));
+      for (const e of edges) {
+        const a = nodeMap.get(e.from); const b = nodeMap.get(e.to);
+        if (!a || !b) continue;
+        const pulse = 0.4 + 0.3 * Math.sin(tickRef.current * 0.03);
+        const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        if (e.type === 'fail') {
+          grad.addColorStop(0, `rgba(239,68,68,${pulse*0.4})`);
+          grad.addColorStop(1, `rgba(239,68,68,${pulse*0.1})`);
+        } else {
+          grad.addColorStop(0, `rgba(99,102,241,${pulse*0.5})`);
+          grad.addColorStop(0.5, `rgba(167,139,250,${pulse*0.6})`);
+          grad.addColorStop(1, `rgba(99,102,241,${pulse*0.5})`);
+        }
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = grad; ctx.lineWidth = 1; ctx.stroke();
+      }
+
+      // Stars (nodes)
+      for (const p of ps) {
+        const online = p.status === 'RUNNING';
+        const pulse  = 1 + 0.15 * Math.sin(tickRef.current * 0.04);
+
+        // Outer glow
+        const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 20 * pulse);
+        grd.addColorStop(0, online ? 'rgba(167,139,250,0.4)' : 'rgba(239,68,68,0.3)');
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.beginPath(); ctx.arc(p.x, p.y, 20 * pulse, 0, Math.PI*2);
+        ctx.fillStyle = grd; ctx.fill();
+
+        // Core star
+        ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI*2);
+        ctx.fillStyle   = online ? '#a78bfa' : '#7f1d1d';
+        ctx.strokeStyle = online ? '#c4b5fd' : '#ef4444';
+        ctx.lineWidth   = 1.5; ctx.fill(); ctx.stroke();
+
+        // Alias label
+        ctx.fillStyle = online ? '#e9d5ff' : '#fca5a5';
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.alias, p.x, p.y + 19);
+      }
+
+      frameRef.current = requestAnimationFrame(tick);
+    };
+
+    frameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRef.current);
+  }, [nodes, edges]);
+
+  if (nodes.length === 0) return null;
+
+  return (
+    <Card padding="none">
+      <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+        <Star className="w-4 h-4 text-violet-400" />
+        <div>
+          <h2 className="text-[15px] font-semibold text-text-primary">Constellation View</h2>
+          <p className="text-[12px] text-text-secondary mt-0.5">
+            {nodes.length} estrelas ativas — identidades reais ocultadas
+          </p>
+        </div>
+      </div>
+      <canvas
+        ref={canvasRef} width={CW} height={CH}
+        className="w-full rounded-b"
+        style={{ background: '#020208', display: 'block' }}
+      />
+    </Card>
   );
 }
 
@@ -336,6 +478,9 @@ export default function DePINClusterView() {
           </div>
         )}
       </Card>
+
+      {/* Constellation View — star-aliased cluster map (Task 17.4) */}
+      <ConstellationWidget appId={app.id} />
 
       {/* Hot-Resize */}
       <HotResizeCard

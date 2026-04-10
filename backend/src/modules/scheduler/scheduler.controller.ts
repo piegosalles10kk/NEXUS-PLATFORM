@@ -201,6 +201,60 @@ export async function resizeApp(req: Request<{ id: string }>, res: Response, nex
   }
 }
 
+// ── GET /api/v1/scheduler/apps/:id/telemetry/net ─────────────────────────────
+/**
+ * Constellation View — returns the app's cluster topology with star aliases.
+ * Node IPs and hostnames are NEVER returned here; only the alias, status, and
+ * anonymised telemetry. Safe for end-users (Tenant) to call.
+ */
+
+const STAR_NAMES = [
+  'Orion','Sirius','Vega','Rigel','Deneb','Altair','Arcturus','Aldebaran',
+  'Antares','Spica','Pollux','Castor','Capella','Procyon','Regulus','Betelgeuse',
+  'Fomalhaut','Achernar','Mira','Canopus','Hadar','Acrux','Mimosa','Gacrux',
+  'Elnath','Alhena','Adhara','Wezen','Mirfak','Algenib','Algol','Menkar',
+  'Menkib','Nunki','Kaus','Sabik','Rasalhague','Yed','Cebalrai','Marfik',
+  'Zubenelgenubi','Zubeneshamali','Sheratan','Hamal','Segin','Ruchbah',
+  'Caph','Schedar','Navi','Achird','Dubhe','Merak','Phad','Megrez',
+  'Alioth','Mizar','Alkaid','Thuban','Phi','Fulu','Acamar','Zaurak',
+];
+
+function starAlias(nodeId: string): string {
+  const hex = nodeId.replace(/-/g, '').slice(0, 4);
+  return STAR_NAMES[parseInt(hex, 16) % STAR_NAMES.length];
+}
+
+export async function getAppNetTelemetry(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    // Tenants see their own apps; ADM sees all
+    const userId = req.user?.role === 'ADM' ? undefined : req.user!.id;
+    const app = await scheduler.getApp(req.params.id, userId);
+    if (!app) {
+      res.status(404).json({ status: 'error', message: 'App not found.' });
+      return;
+    }
+
+    const nodes = (app.assignments ?? []).map((a: any) => ({
+      id:     a.nodeId,
+      alias:  starAlias(a.nodeId),
+      status: a.status as string,       // RUNNING | STOPPED | FAILED | OFFLINE
+    }));
+
+    // Full-mesh edges (every node talks to every other in the cluster)
+    const edges: { from: string; to: string; type: 'net' | 'fail' }[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const bothUp = nodes[i].status === 'RUNNING' && nodes[j].status === 'RUNNING';
+        edges.push({ from: nodes[i].id, to: nodes[j].id, type: bothUp ? 'net' : 'fail' });
+      }
+    }
+
+    res.json({ status: 'success', data: { appId: app.id, appName: app.name, nodes, edges } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── POST /api/v1/scheduler/apps/:id/reassign ─────────────────────────────────
 /**
  * Replaces a specific offline node in an app's assignment list with a new best node.

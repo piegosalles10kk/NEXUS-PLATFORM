@@ -10,11 +10,11 @@
  *   - Trilha de auditoria
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Shield, AlertTriangle, Users, Wallet, Trash2, Plus, Ban,
-  CheckCircle, RefreshCw, Loader2, Activity, Eye,
-  ChevronRight, XCircle, Terminal, Zap, Award,
+  CheckCircle, RefreshCw, Loader2, Activity,
+  ChevronRight, XCircle, Terminal, Zap, Award, Network,
 } from 'lucide-react';
 import api from '../services/api';
 import { io, Socket } from 'socket.io-client';
@@ -189,6 +189,143 @@ function PanicModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (s
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── Sentinel Net Graph ────────────────────────────────────────────────────── */
+
+interface NetNode {
+  id: string; name: string; status: string;
+  x: number; y: number; vx: number; vy: number;
+}
+interface NetEdge { from: string; to: string }
+
+const NET_W = 480; const NET_H = 240;
+const CX = NET_W / 2; const CY = NET_H / 2;
+
+function SentinelNetGraph({
+  nodes: rawNodes,
+  onNodeClick,
+  selectedId,
+}: {
+  nodes: BenchmarkNode[];
+  onNodeClick: (id: string) => void;
+  selectedId: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const nodesRef  = useRef<NetNode[]>([]);
+  const frameRef  = useRef<number>(0);
+
+  // Initialise physics nodes from benchmark data
+  useEffect(() => {
+    const angle = (2 * Math.PI) / Math.max(rawNodes.length, 1);
+    nodesRef.current = rawNodes.map((n, i) => ({
+      id: n.id, name: n.name, status: n.status,
+      x: CX + Math.cos(i * angle) * 90,
+      y: CY + Math.sin(i * angle) * 80,
+      vx: 0, vy: 0,
+    }));
+  }, [rawNodes]);
+
+  // Click handler — find nearest node
+  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    for (const n of nodesRef.current) {
+      const dx = n.x - mx; const dy = n.y - my;
+      if (Math.sqrt(dx*dx + dy*dy) <= 14) { onNodeClick(n.id); return; }
+    }
+    onNodeClick(''); // click on empty → clear filter
+  }, [onNodeClick]);
+
+  // Animation loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+
+    const tick = () => {
+      const ns = nodesRef.current;
+      // Spring physics — light repulsion + center pull
+      for (let i = 0; i < ns.length; i++) {
+        ns[i].vx += (CX - ns[i].x) * 0.004;
+        ns[i].vy += (CY - ns[i].y) * 0.004;
+        for (let j = 0; j < ns.length; j++) {
+          if (i === j) continue;
+          const dx = ns[i].x - ns[j].x; const dy = ns[i].y - ns[j].y;
+          const d = Math.sqrt(dx*dx + dy*dy) || 1;
+          const f = 900 / (d * d);
+          ns[i].vx += (dx / d) * f;
+          ns[i].vy += (dy / d) * f;
+        }
+        ns[i].vx *= 0.85; ns[i].vy *= 0.85;
+        ns[i].x = Math.max(18, Math.min(NET_W - 18, ns[i].x + ns[i].vx));
+        ns[i].y = Math.max(18, Math.min(NET_H - 18, ns[i].y + ns[i].vy));
+      }
+
+      // Draw
+      ctx.clearRect(0, 0, NET_W, NET_H);
+
+      // Edges
+      for (let i = 0; i < ns.length; i++) {
+        for (let j = i+1; j < ns.length; j++) {
+          const a = ns[i]; const b = ns[j];
+          const fail = a.status !== 'ONLINE' || b.status !== 'ONLINE';
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+          ctx.strokeStyle = fail ? 'rgba(239,68,68,0.25)' : 'rgba(99,102,241,0.2)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+
+      // Nodes
+      for (const n of ns) {
+        const isOffline  = n.status !== 'ONLINE';
+        const isSelected = n.id === selectedId;
+        const r = isSelected ? 13 : 10;
+
+        // Glow for selected
+        if (isSelected) {
+          ctx.beginPath(); ctx.arc(n.x, n.y, r + 5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(239,68,68,0.15)'; ctx.fill();
+        }
+
+        ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        ctx.fillStyle   = isOffline ? '#7f1d1d' : '#1e3a2e';
+        ctx.strokeStyle = isOffline ? '#ef4444' : '#22c55e';
+        ctx.lineWidth   = isSelected ? 2 : 1;
+        ctx.fill(); ctx.stroke();
+
+        // Label
+        ctx.fillStyle = isOffline ? '#fca5a5' : '#86efac';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(n.name.slice(0, 8), n.x, n.y + r + 9);
+      }
+
+      frameRef.current = requestAnimationFrame(tick);
+    };
+
+    frameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRef.current);
+  }, [selectedId]);
+
+  if (rawNodes.length === 0) return (
+    <div className="flex items-center justify-center h-20 text-[11px] text-[#444]">
+      Nenhum nó conectado para exibir.
+    </div>
+  );
+
+  return (
+    <canvas
+      ref={canvasRef} width={NET_W} height={NET_H}
+      className="w-full cursor-crosshair rounded"
+      style={{ background: '#050505', maxHeight: 240 }}
+      onClick={handleClick}
+      title="Clique em um nó para filtrar os logs"
+    />
   );
 }
 
@@ -637,27 +774,59 @@ export default function SentinelPage() {
             )}
           </div>
 
-          {/* ── Sprint 17.3 — Log Terminal ─────────────────────────────── */}
+          {/* ── Sprint 17.2 + 17.3 — Nexus Net Graph + Log Terminal ─────── */}
           <div className={S.card}>
             <div className={S.cardHead}>
               <div className="flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-[#7ee040]" />
-                <p className="text-[13px] font-semibold text-white">Terminal de Logs — Caixa Preta</p>
+                <Network className="w-4 h-4 text-[#6366f1]" />
+                <div>
+                  <p className="text-[13px] font-semibold text-white">Nexus Net Global</p>
+                  <p className="text-[10px] text-[#555]">Clique num nó para filtrar os logs abaixo</p>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  className={S.input + ' w-40 text-[11px] py-1'}
-                  placeholder="Filtrar por nodeId..."
-                  value={logFilter}
-                  onChange={e => setLogFilter(e.target.value)}
-                />
-                <button onClick={loadLogs} className={S.btnGhost}>
-                  <RefreshCw className="w-3.5 h-3.5" />
+              {logFilter && (
+                <button onClick={() => setLogFilter('')} className={S.btnGhost + ' text-[10px] px-2 py-1'}>
+                  <XCircle className="w-3 h-3 inline mr-1" />
+                  Limpar
                 </button>
-              </div>
+              )}
             </div>
             <div className="p-3">
-              <LogTerminal logs={logs} filterNodeId={logFilter.trim()}/>
+              <SentinelNetGraph
+                nodes={benchNodes}
+                selectedId={logFilter}
+                onNodeClick={id => setLogFilter(id)}
+              />
+            </div>
+
+            <div className="border-t border-[#1a1a1a]">
+              <div className="px-4 py-2.5 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-3.5 h-3.5 text-[#7ee040]" />
+                  <p className="text-[12px] font-semibold text-white">
+                    Caixa Preta
+                    {logFilter && (
+                      <span className="ml-2 text-[10px] text-[#6366f1] font-mono">
+                        [{logFilter.slice(0, 8)}…]
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    className={S.input + ' w-36 text-[11px] py-1'}
+                    placeholder="nodeId manual..."
+                    value={logFilter}
+                    onChange={e => setLogFilter(e.target.value)}
+                  />
+                  <button onClick={loadLogs} className={S.btnGhost}>
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="px-3 pb-3">
+                <LogTerminal logs={logs} filterNodeId={logFilter.trim()}/>
+              </div>
             </div>
           </div>
 
