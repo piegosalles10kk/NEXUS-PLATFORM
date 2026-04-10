@@ -25,6 +25,7 @@ services:
       - EXEC=1
       - EXEC_START=1
       - EXEC_CREATE=1
+      - KILL=1   # needed for nginx -s reload (SIGHUP via docker proxy)
       - POST=1
       - DELETE=1
     networks:

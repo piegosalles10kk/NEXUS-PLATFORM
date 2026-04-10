@@ -1,10 +1,7 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as http from 'http';
 import { prisma } from '../config/database';
-
-const execAsync = promisify(exec);
 
 // Shared volume path (mounted in both backend and frontend containers)
 const GATEWAY_CONF_PATH = process.env.GATEWAY_CONF_PATH || '/shared/gateway.conf';
@@ -83,7 +80,49 @@ location = ${safePath} {
 }
 
 /**
- * Writes the gateway.conf and reloads Nginx inside the frontend container.
+ * Sends SIGHUP to all nginx processes inside the frontend container via the
+ * Docker socket proxy (POST /containers/{id}/kill?signal=HUP).
+ * This is equivalent to `nginx -s reload` but works without docker CLI.
+ */
+async function signalNginxReload(): Promise<void> {
+  const dockerProxyHost = process.env.DOCKER_PROXY_HOST ?? 'tcp://10kk-docker-proxy:2375';
+  // Parse tcp://host:port
+  const match = dockerProxyHost.match(/tcp:\/\/([^:]+):(\d+)/);
+  if (!match) {
+    console.warn('[Gateway] DOCKER_PROXY_HOST not set or malformed — skipping nginx reload signal');
+    return;
+  }
+  const [, proxyHost, proxyPortStr] = match;
+  const proxyPort = parseInt(proxyPortStr, 10);
+
+  const containerName = process.env.FRONTEND_CONTAINER_NAME ?? '10kk-frontend';
+
+  await new Promise<void>((resolve) => {
+    // POST /containers/10kk-frontend/kill?signal=HUP
+    const options = {
+      hostname: proxyHost,
+      port:     proxyPort,
+      path:     `/containers/${containerName}/kill?signal=HUP`,
+      method:   'POST',
+    };
+    const req = http.request(options, (res) => {
+      if (res.statusCode && res.statusCode < 300) {
+        console.log('[Gateway] Nginx reload signal sent (HUP).');
+      } else {
+        console.warn(`[Gateway] HUP signal returned HTTP ${res.statusCode}`);
+      }
+      resolve();
+    });
+    req.on('error', (err) => {
+      console.warn('[Gateway] Could not signal nginx reload:', err.message);
+      resolve(); // non-fatal
+    });
+    req.end();
+  });
+}
+
+/**
+ * Writes the gateway.conf to the shared volume and signals Nginx to reload.
  */
 export async function reloadNginxGateway(): Promise<void> {
   try {
@@ -97,9 +136,8 @@ export async function reloadNginxGateway(): Promise<void> {
     fs.writeFileSync(GATEWAY_CONF_PATH, conf, 'utf8');
     console.log(`[Gateway] Written ${GATEWAY_CONF_PATH} (${conf.length} bytes)`);
 
-    // Reload Nginx inside the frontend container via Docker socket
-    await execAsync('docker exec 10kk-frontend nginx -s reload');
-    console.log('[Gateway] Nginx reloaded successfully.');
+    // Signal nginx inside the frontend container to reload config
+    await signalNginxReload();
   } catch (err: any) {
     // Non-fatal: log but don't crash the request
     console.error('[Gateway] Failed to reload Nginx:', err.message);

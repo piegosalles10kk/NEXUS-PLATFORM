@@ -1,56 +1,42 @@
 import { Request, Response, NextFunction } from 'express';
-import { createProxyMiddleware, Options } from 'http-proxy-middleware';
 import { prisma } from '../../config/database';
 import { sendProxyRequest } from '../../services/agent-ws.service';
 
 /**
- * Dinamic Proxy Middleware
- * Intercepta requisições e as encaminha para o destino correto com base no path.
- * Rotas marcadas como isTunnelled são encaminhadas através do túnel WebSocket do agente.
+ * Dynamic Proxy Middleware — TUNNEL-ONLY.
+ *
+ * Direct (non-tunnel) gateway routes are handled entirely by Nginx, which
+ * proxy_passes straight to the target service. Those requests NEVER reach
+ * Express, so we must NOT proxy them here (that would cause double-proxying).
+ *
+ * Only tunnelled routes come through Express: Nginx forwards them to the
+ * backend (/api/... is excluded, so Nginx sends the tunnelled path here),
+ * and we dispatch via the agent WebSocket tunnel.
  */
 export const dynamicProxy = async (req: Request, res: Response, next: NextFunction) => {
-  // Ignora rotas da própria API e Webhooks
-  if (req.path.startsWith('/api') || req.path.startsWith('/webhook') || req.path === '/health') {
+  // Skip all system paths — these are handled by other Express routes
+  if (
+    req.path.startsWith('/api') ||
+    req.path.startsWith('/webhook') ||
+    req.path.startsWith('/depin') ||
+    req.path === '/health'
+  ) {
     return next();
   }
 
   try {
-    // Busca todas as rotas ativas
+    // Only look for tunnelled routes — direct routes go through Nginx, not Express
     const routes = await prisma.gatewayRoute.findMany({
-      where: { isActive: true },
+      where: { isActive: true, isTunnelled: true },
     });
 
-    // Encontra a rota que mais se aproxima do path atual
     const matchedRoute = routes.find((r: any) => req.path.startsWith(r.routePath));
 
     if (!matchedRoute) {
-      return next(); // Segue para o próximo middleware ou 404
+      return next();
     }
 
-    // ── Tunnel mode: forward via agent WebSocket ──────────────────────────────
-    if ((matchedRoute as any).isTunnelled) {
-      return handleTunnelRequest(req, res, matchedRoute as any);
-    }
-
-    // ── Direct mode: standard HTTP proxy ─────────────────────────────────────
-    const proxyOptions: Options = {
-      target: matchedRoute.targetUrl,
-      changeOrigin: true,
-      pathRewrite: {
-        [`^${matchedRoute.routePath}`]: '', // Remove o prefixo da rota ao encaminhar
-      },
-      on: {
-        error: (err: Error, req: any, res: any) => {
-          console.error(`Proxy Error (${matchedRoute.name}):`, err);
-          (res as Response).status(502).send('Bad Gateway - O serviço de destino não está respondendo.');
-        },
-      },
-    };
-
-    // Cria e executa o proxy para esta requisição
-    const proxy = createProxyMiddleware(proxyOptions);
-    return proxy(req, res, next);
-
+    return handleTunnelRequest(req, res, matchedRoute as any);
   } catch (error) {
     console.error('Dynamic Proxy Error:', error);
     next(error);
