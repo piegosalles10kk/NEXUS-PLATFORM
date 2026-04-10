@@ -192,6 +192,93 @@ function PanicModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (s
   );
 }
 
+/* ── Peer Latency Heatmap ──────────────────────────────────────────────────── */
+
+function latencyColor(ms: number | null | undefined): string {
+  if (ms == null) return '#1a1a1a';          // no data — dark
+  if (ms < 5)    return '#166534';           // < 5 ms  — deep green
+  if (ms < 15)   return '#15803d';           // < 15 ms — green
+  if (ms < 40)   return '#854d0e';           // < 40 ms — amber
+  if (ms < 100)  return '#7c2d12';           // < 100ms — orange-red
+  return '#450a0a';                          // ≥ 100ms — red
+}
+function latencyText(ms: number | null | undefined): string {
+  if (ms == null) return '—';
+  if (ms < 1)    return '<1';
+  return ms.toFixed(0);
+}
+
+function PeerLatencyHeatmap({ data }: {
+  data: { nodes: { id: string; name: string }[]; matrix: Record<string, Record<string, number>> };
+}) {
+  const { nodes, matrix } = data;
+  if (nodes.length < 2) return (
+    <div className="flex items-center justify-center h-16 text-[11px] text-[#444]">
+      Precisa de pelo menos 2 nós com benchmark inter-pares concluído.
+    </div>
+  );
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-[10px] font-mono border-collapse">
+        <thead>
+          <tr>
+            <th className="px-2 py-1 text-[#444] text-left w-24">De \ Para</th>
+            {nodes.map(n => (
+              <th key={n.id} className="px-2 py-1 text-[#666] text-center max-w-[60px] truncate" title={n.name}>
+                {n.name.slice(0, 8)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {nodes.map(rowNode => (
+            <tr key={rowNode.id}>
+              <td className="px-2 py-1 text-[#666] font-semibold truncate max-w-[96px]" title={rowNode.name}>
+                {rowNode.name.slice(0, 10)}
+              </td>
+              {nodes.map(colNode => {
+                const isSelf = rowNode.id === colNode.id;
+                const ms = isSelf ? null : (matrix[rowNode.id]?.[colNode.id] ?? matrix[colNode.id]?.[rowNode.id] ?? null);
+                return (
+                  <td
+                    key={colNode.id}
+                    className="text-center px-2 py-1 rounded"
+                    style={{
+                      background: isSelf ? '#0d0d0d' : latencyColor(ms),
+                      color: isSelf ? '#222' : ms == null ? '#333' : '#e5e5e5',
+                      minWidth: 44,
+                    }}
+                    title={isSelf ? rowNode.name : `${rowNode.name} → ${colNode.name}: ${latencyText(ms)} ms`}
+                  >
+                    {isSelf ? '·' : `${latencyText(ms)}ms`}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="flex items-center gap-3 mt-3 px-1">
+        <span className="text-[10px] text-[#555]">Legenda:</span>
+        {[
+          { color: '#166534', label: '< 5ms' },
+          { color: '#15803d', label: '< 15ms' },
+          { color: '#854d0e', label: '< 40ms' },
+          { color: '#7c2d12', label: '< 100ms' },
+          { color: '#450a0a', label: '≥ 100ms' },
+          { color: '#1a1a1a', label: 'sem dados' },
+        ].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded" style={{ background: color }} />
+            <span className="text-[10px] text-[#555]">{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ── Sentinel Net Graph ────────────────────────────────────────────────────── */
 
 interface NetNode {
@@ -417,6 +504,12 @@ export default function SentinelPage() {
   const [benchNodes, setBenchNodes]     = useState<BenchmarkNode[]>([]);
   const [runningBench, setRunningBench] = useState<string | null>(null);
 
+  // Peer latency matrix
+  const [peerMatrix, setPeerMatrix] = useState<{
+    nodes: { id: string; name: string }[];
+    matrix: Record<string, Record<string, number>>;
+  } | null>(null);
+
   // Sprint 17.5 — Stress test
   const [stressLoading, setStressLoad] = useState(false);
   const [stressMsg, setStressMsg]      = useState('');
@@ -442,14 +535,16 @@ export default function SentinelPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [tRes, aRes, bRes] = await Promise.all([
+      const [tRes, aRes, bRes, mRes] = await Promise.all([
         api.get('/v1/admin/tenants'),
         api.get('/v1/admin/audit?limit=20'),
         api.get('/v1/admin/nodes/benchmarks').catch(() => ({ data: { data: { nodes: [] } } })),
+        api.get('/v1/admin/nodes/peer-matrix').catch(() => null),
       ]);
       setTenants(tRes.data.data.tenants);
       setAudit(aRes.data.data.logs);
       setBenchNodes(bRes.data.data.nodes);
+      if (mRes) setPeerMatrix(mRes.data.data);
     } catch { /* errors shown inline */ }
     finally { setLoading(false); }
   };
@@ -912,6 +1007,30 @@ export default function SentinelPage() {
                 </table>
               </div>
             )}
+          </div>
+
+          {/* ── Peer Latency Matrix ───────────────────────────────────── */}
+          <div className={S.card}>
+            <div className={S.cardHead}>
+              <div className="flex items-center gap-2">
+                <Network className="w-4 h-4 text-[#6366f1]" />
+                <div>
+                  <p className="text-[13px] font-semibold text-white">Matriz de Latência Inter-Nós</p>
+                  <p className="text-[11px] text-[#555]">RTT real entre cada par WireGuard — atualizado após benchmark</p>
+                </div>
+              </div>
+              <button onClick={() => api.get('/v1/admin/nodes/peer-matrix').then(r => setPeerMatrix(r.data.data)).catch(() => {})} className={S.btnGhost}>
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="p-4">
+              {peerMatrix && peerMatrix.nodes.length >= 2
+                ? <PeerLatencyHeatmap data={peerMatrix} />
+                : <div className="flex items-center justify-center h-16 text-[11px] text-[#444]">
+                    Rode um benchmark nos nós para popular a matriz.
+                  </div>
+              }
+            </div>
           </div>
 
           {/* ── Sprint 17.5 — Global Swarm Stress Test ────────────────── */}

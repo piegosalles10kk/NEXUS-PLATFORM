@@ -573,6 +573,16 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
 
         // Sprint 17.4 — Benchmark result from agent
         case 'benchmark_result': {
+          // Save per-node peer latency matrix to Redis for cross-node heatmap
+          const peerLatencies: Record<string, number> = msg.peerLatencies ?? {};
+          if (Object.keys(peerLatencies).length > 0) {
+            getRedisClient().then(r => r.set(
+              `node:${nodeId}:peer_latencies`,
+              JSON.stringify({ ts: Date.now(), peers: peerLatencies }),
+              'EX', 3600,
+            )).catch(() => {});
+          }
+
           import('./benchmark.service').then(({ saveBenchmarkResult }) =>
             saveBenchmarkResult({
               nodeId,
@@ -584,7 +594,7 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
               meshBandwidthMbps: msg.meshBandwidthMbps  ?? 0,
             })
           ).then(() => {
-            io.emit('sentinel:benchmark_done', { nodeId });
+            io.emit('sentinel:benchmark_done', { nodeId, peerLatencies });
           }).catch(console.error);
           break;
         }

@@ -37,6 +37,9 @@ type BenchmarkResult struct {
 	GPUTflops         float64
 	MeshLatencyMs     float64
 	MeshBandwidthMbps float64
+	// PeerLatencies maps each WireGuard peer IP → avg RTT in ms.
+	// Empty on non-Linux or when nexus0 has no peers.
+	PeerLatencies map[string]float64
 }
 
 type StressResult struct {
@@ -57,6 +60,7 @@ func RunBenchmark(ctx context.Context) BenchmarkResult {
 	r.StorageIOPS = probeStorage(ctx)
 	r.GPUTflops   = probeGPU(ctx)
 	r.MeshLatencyMs, r.MeshBandwidthMbps = probeMesh(ctx)
+	r.PeerLatencies = ProbePeerLatencies(ctx)
 
 	return r
 }
@@ -313,6 +317,82 @@ func probeMesh(ctx context.Context) (latencyMs float64, bandwidthMbps float64) {
 	}
 
 	return latencyMs, bandwidthMbps
+}
+
+// ── Stage 6: Peer-to-peer WireGuard latency matrix ───────────────────────────
+
+// ProbePeerLatencies pings every WireGuard peer visible on nexus0 and returns
+// a map of peerIP → avg RTT in ms. On non-Linux hosts it returns an empty map.
+func ProbePeerLatencies(ctx context.Context) map[string]float64 {
+	result := make(map[string]float64)
+	if runtime.GOOS != "linux" {
+		return result
+	}
+
+	// List peer IPs from WireGuard: `wg show nexus0 allowed-ips`
+	// Output lines: "<pubkey>  <ip/cidr> ..."
+	out, err := exec.CommandContext(ctx, "wg", "show", "nexus0", "allowed-ips").Output()
+	if err != nil {
+		return result
+	}
+
+	var peers []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		// Each field after pubkey is an allowed-ip CIDR; pick the first non-::/0
+		for _, cidr := range fields[1:] {
+			if cidr == "::/0" || cidr == "0.0.0.0/0" {
+				continue
+			}
+			ip := strings.Split(cidr, "/")[0]
+			if ip != "" {
+				peers = append(peers, ip)
+				break
+			}
+		}
+	}
+
+	if len(peers) == 0 {
+		return result
+	}
+
+	// Ping each peer concurrently (3 packets, 1s timeout each)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			pCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			o, err := exec.CommandContext(pCtx, "ping", "-c", "3", "-W", "1", ip).Output()
+			if err != nil {
+				return
+			}
+			// Parse "rtt min/avg/max/mdev = X/Y/Z/W ms"
+			for _, l := range strings.Split(string(o), "\n") {
+				if strings.Contains(l, "rtt") && strings.Contains(l, "avg") {
+					parts := strings.Split(l, "=")
+					if len(parts) < 2 {
+						continue
+					}
+					stats := strings.Split(strings.TrimSpace(parts[1]), "/")
+					if len(stats) >= 2 {
+						avg, _ := strconv.ParseFloat(strings.TrimSpace(stats[1]), 64)
+						mu.Lock()
+						result[ip] = round2(avg)
+						mu.Unlock()
+					}
+				}
+			}
+		}(peer)
+	}
+	wg.Wait()
+
+	return result
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

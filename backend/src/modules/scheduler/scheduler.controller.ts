@@ -3,6 +3,7 @@ import * as scheduler from '../../services/scheduler.service';
 import { classifyRuntime } from '../../services/classifier.service';
 import { sendWorkloadToNodes } from '../../services/workload-dispatch.service';
 import prisma from '../../config/database';
+import { getRedisClient } from '../../config/redis';
 
 // ── GET /api/v1/scheduler/nodes ───────────────────────────────────────────────
 /**
@@ -234,22 +235,52 @@ export async function getAppNetTelemetry(req: Request<{ id: string }>, res: Resp
       return;
     }
 
-    const nodes = (app.assignments ?? []).map((a: any) => ({
-      id:     a.nodeId,
+    const nodeList = (app.assignments ?? []).map((a: any) => ({
+      id:     a.nodeId as string,
       alias:  starAlias(a.nodeId),
-      status: a.status as string,       // RUNNING | STOPPED | FAILED | OFFLINE
+      status: a.status as string,
     }));
 
-    // Full-mesh edges (every node talks to every other in the cluster)
-    const edges: { from: string; to: string; type: 'net' | 'fail' }[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const bothUp = nodes[i].status === 'RUNNING' && nodes[j].status === 'RUNNING';
-        edges.push({ from: nodes[i].id, to: nodes[j].id, type: bothUp ? 'net' : 'fail' });
+    // Load real peer latencies from Redis for each node in this cluster
+    const redis = await getRedisClient();
+    const peerDataMap: Record<string, Record<string, number>> = {};
+    await Promise.all(nodeList.map(async (n) => {
+      const raw = await redis.get(`node:${n.id}:peer_latencies`).catch(() => null);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { peers: Record<string, number> };
+        peerDataMap[n.id] = parsed.peers;
+      }
+    }));
+
+    // Build edges with real latency when available
+    const nodeIds = nodeList.map(n => n.id);
+    const edges: { from: string; to: string; latencyMs: number | null; type: 'net' | 'fail' | 'gpu' }[] = [];
+    for (let i = 0; i < nodeList.length; i++) {
+      for (let j = i + 1; j < nodeList.length; j++) {
+        const a = nodeList[i]; const b = nodeList[j];
+        const bothUp = a.status === 'RUNNING' && b.status === 'RUNNING';
+
+        // Try to find real latency: A→B or B→A
+        let latencyMs: number | null = null;
+        const peersA = peerDataMap[a.id] ?? {};
+        const peersB = peerDataMap[b.id] ?? {};
+        // peerDataMap keys are IPs; try to find any value keyed by the other nodeId
+        // (after backend re-keying in peer-matrix endpoint logic)
+        for (const [key, ms] of Object.entries(peersA)) {
+          if (nodeIds.includes(key) && key === b.id) { latencyMs = ms; break; }
+        }
+        if (latencyMs === null) {
+          for (const [key, ms] of Object.entries(peersB)) {
+            if (nodeIds.includes(key) && key === a.id) { latencyMs = ms; break; }
+          }
+        }
+
+        const type = !bothUp ? 'fail' : latencyMs !== null && latencyMs < 10 ? 'gpu' : 'net';
+        edges.push({ from: a.id, to: b.id, latencyMs, type });
       }
     }
 
-    res.json({ status: 'success', data: { appId: app.id, appName: app.name, nodes, edges } });
+    res.json({ status: 'success', data: { appId: app.id, appName: app.name, nodes: nodeList, edges } });
   } catch (err) {
     next(err);
   }

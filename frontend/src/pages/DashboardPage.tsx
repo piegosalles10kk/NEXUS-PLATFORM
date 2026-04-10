@@ -12,6 +12,7 @@ import { Plus, LayoutDashboard, Loader2, Settings2 } from 'lucide-react';
 import { BaseWidget } from '../components/dashboard/widgets/BaseWidget';
 import { ProjectMiniWidget } from '../components/dashboard/widgets/ProjectMiniWidget';
 import { ServerCardWidget } from '../components/dashboard/widgets/ServerCardWidget';
+import { ConstellationDashWidget } from '../components/dashboard/widgets/ConstellationDashWidget';
 import { AddWidgetModal } from '../components/dashboard/AddWidgetModal';
 
 interface Widget {
@@ -142,6 +143,13 @@ export default function DashboardPage() {
         );
       case 'PROJECT_STATUS':
         return <ProjectMiniWidget projectId={widget.settings?.projectId} />;
+      case 'CONSTELLATION':
+        return (
+          <ConstellationDashWidget
+            appId={widget.settings?.appId}
+            appName={widget.settings?.appName}
+          />
+        );
       default:
         return <div className="text-xs text-text-muted italic">Widget desconhecido</div>;
     }
@@ -212,6 +220,8 @@ export default function DashboardPage() {
                         navigate(`/cloud/servers/${widget.settings.nodeId}`);
                       } else if (widget.type === 'PROJECT_STATUS' && widget.settings?.projectId) {
                         navigate(`/project/${widget.settings.projectId}`);
+                      } else if (widget.type === 'CONSTELLATION' && widget.settings?.appId) {
+                        navigate(`/depin/${widget.settings.appId}`);
                       }
                     }}
                   >

@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import prisma from '../../config/database';
 import { writeAudit, readAuditLogs } from '../../services/audit.service';
 import { getIo, getAgentSocket, getConnectedNodeIds } from '../../services/agent-ws.service';
+import { getRedisClient } from '../../config/redis';
 import { env } from '../../config/env';
 import {
   triggerBenchmark,
@@ -349,5 +350,58 @@ export async function getRecentLogs(req: Request, res: Response, next: NextFunct
     const limit = parseInt(req.query.limit as string ?? '100', 10);
     const logs  = recentBackendLogs(limit);
     res.json({ status: 'success', data: { logs } });
+  } catch (err) { next(err); }
+}
+
+// ── Peer latency matrix ───────────────────────────────────────────────────────
+
+/**
+ * GET /admin/nodes/peer-matrix
+ *
+ * Returns the full NxN latency matrix built from data stored in Redis by each
+ * node after it runs its benchmark (ProbePeerLatencies).
+ *
+ * Response shape:
+ *   { nodes: [{ id, name }], matrix: { [fromNodeId]: { [peerIp]: latencyMs } } }
+ */
+export async function getPeerMatrix(req: Request, res: Response, next: NextFunction) {
+  try {
+    const redis = await getRedisClient();
+
+    // Fetch all connected nodes
+    const nodes: { id: string; name: string; wgIp: string | null }[] = await (prisma.node as any).findMany({
+      where:  { status: { not: 'DELETED' } },
+      select: { id: true, name: true, wireguardPubKey: true },
+      orderBy: { name: 'asc' },
+    });
+
+    // Build IP→nodeId reverse map from ClusterMembership meshIp
+    const memberships: { nodeId: string; meshIp: string }[] = await (prisma.clusterMembership as any).findMany({
+      select: { nodeId: true, meshIp: true },
+    });
+    const ipToNodeId = new Map(memberships.map(m => [m.meshIp, m.nodeId]));
+
+    // Read peer_latencies for each node from Redis
+    const matrix: Record<string, Record<string, number>> = {};
+    await Promise.all(nodes.map(async (n) => {
+      const raw = await redis.get(`node:${n.id}:peer_latencies`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { ts: number; peers: Record<string, number> };
+      // Re-key by nodeId when possible, fall back to IP
+      const keyed: Record<string, number> = {};
+      for (const [ip, ms] of Object.entries(parsed.peers)) {
+        const targetId = ipToNodeId.get(ip) ?? ip;
+        keyed[targetId] = ms;
+      }
+      matrix[n.id] = keyed;
+    }));
+
+    res.json({
+      status: 'success',
+      data: {
+        nodes: nodes.map(n => ({ id: n.id, name: n.name })),
+        matrix,
+      },
+    });
   } catch (err) { next(err); }
 }

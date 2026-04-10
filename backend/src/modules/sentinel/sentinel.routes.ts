@@ -28,6 +28,7 @@ router.get( '/audit',            ...guard, ctrl.getAuditLogs);
 
 // Sprint 17 — Benchmark & Stress Test
 router.get(  '/nodes/benchmarks',       ...guard, ctrl.listBenchmarks);
+router.get(  '/nodes/peer-matrix',      ...guard, ctrl.getPeerMatrix);
 router.post( '/nodes/:id/benchmark',    ...guard, ctrl.runBenchmark);
 router.post( '/nodes/:id/infra-type',   ...guard, ctrl.setInfraType);
 router.post( '/stress-test',            ...guard, ctrl.globalStressTest);

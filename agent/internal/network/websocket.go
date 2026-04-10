@@ -899,6 +899,7 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 				"gpuTflops":         result.GPUTflops,
 				"meshLatencyMs":     result.MeshLatencyMs,
 				"meshBandwidthMbps": result.MeshBandwidthMbps,
+				"peerLatencies":     result.PeerLatencies, // map[peerIP]avgRttMs
 			})
 			log.Printf("[benchmark] done: CPU=%.2fGF RAM=%.2fGB/s IOPS=%.0f GPU=%.2fTF mesh=%.1fms",
 				result.CPUGflops, result.RAMGbps, result.StorageIOPS,

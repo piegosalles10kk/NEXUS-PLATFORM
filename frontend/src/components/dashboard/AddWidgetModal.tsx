@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Monitor, Rocket, Plus, Loader2 } from 'lucide-react';
+import { X, Monitor, Rocket, Plus, Loader2, Star } from 'lucide-react';
 import api from '../../services/api';
 
 interface AddWidgetModalProps {
@@ -11,8 +11,9 @@ interface AddWidgetModalProps {
 export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
   const [step, setStep] = useState(1);
   const [type, setType] = useState<string | null>(null);
-  const [nodes, setNodes] = useState<any[]>([]);
+  const [nodes, setNodes]     = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
+  const [depinApps, setDepinApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
 
@@ -20,12 +21,14 @@ export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [nodesRes, projectsRes] = await Promise.all([
+        const [nodesRes, projectsRes, appsRes] = await Promise.all([
           api.get('/v1/agent/nodes'),
           api.get('/projects'),
+          api.get('/v1/scheduler/apps').catch(() => ({ data: { data: { apps: [] } } })),
         ]);
         setNodes(nodesRes.data.data.nodes);
         setProjects(projectsRes.data.data.projects);
+        setDepinApps(appsRes.data.data.apps ?? []);
       } catch (err) {
         console.error('Failed to fetch data for modal', err);
       } finally {
@@ -36,8 +39,9 @@ export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
   }, []);
 
   const widgetTypes = [
-    { id: 'SERVER_CARD', name: 'Servidor Completo', icon: Monitor, color: 'text-accent', description: 'Painel unificado com CPU, RAM, HD e Rede' },
-    { id: 'PROJECT_STATUS', name: 'Status de Projeto', icon: Rocket, color: 'text-accent-light', description: 'Acompanhamento compacto de um projeto' },
+    { id: 'SERVER_CARD',    name: 'Servidor Completo',     icon: Monitor, color: 'text-accent',        description: 'Painel unificado com CPU, RAM, HD e Rede' },
+    { id: 'PROJECT_STATUS', name: 'Status de Projeto',     icon: Rocket,  color: 'text-accent-light',  description: 'Acompanhamento compacto de um projeto' },
+    { id: 'CONSTELLATION',  name: 'Constellation DePIN',   icon: Star,    color: 'text-violet-400',    description: 'Mapa estelar animado de um app DePIN' },
   ];
 
   const handleSelectType = (selectedType: string) => {
@@ -48,16 +52,29 @@ export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
   const handleConfirm = () => {
     if (!type || !selectedTarget) return;
 
-    const targetName = type.startsWith('SERVER_') 
-      ? nodes.find(n => n.id === selectedTarget)?.name 
-      : projects.find(p => p.id === selectedTarget)?.name;
+    let targetName: string | undefined;
+    let settings: Record<string, string>;
+    let w = 1; let h = 1;
+
+    if (type === 'SERVER_CARD') {
+      targetName = nodes.find(n => n.id === selectedTarget)?.name;
+      settings = { nodeId: selectedTarget };
+      w = 2; h = 2;
+    } else if (type === 'CONSTELLATION') {
+      const app = depinApps.find(a => a.id === selectedTarget);
+      targetName = app?.name;
+      settings = { appId: selectedTarget, appName: app?.name ?? '' };
+      w = 2; h = 2;
+    } else {
+      targetName = projects.find(p => p.id === selectedTarget)?.name;
+      settings = { projectId: selectedTarget };
+    }
 
     const widget = {
       type,
       title: targetName || widgetTypes.find(t => t.id === type)?.name || 'Novo Widget',
-      settings: type.startsWith('SERVER_') ? { nodeId: selectedTarget } : { projectId: selectedTarget },
-      w: type === 'SERVER_CARD' ? 2 : 1,
-      h: type === 'SERVER_CARD' ? 2 : 1,
+      settings,
+      w, h,
     };
 
     onAdd(widget);
@@ -107,14 +124,14 @@ export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
           {step === 2 && (
             <div className="space-y-4 animate-fade-in">
               <label className="block text-xs font-bold text-text-secondary uppercase tracking-widest mb-1.5">
-                {type?.startsWith('SERVER_') ? 'Selecionar Servidor' : 'Selecionar Projeto'}
+                {type === 'SERVER_CARD' ? 'Selecionar Servidor' : type === 'CONSTELLATION' ? 'Selecionar App DePIN' : 'Selecionar Projeto'}
               </label>
-              
+
               {loading ? (
                 <div className="flex justify-center p-8"><Loader2 className="w-6 h-6 text-accent animate-spin" /></div>
               ) : (
                 <div className="max-h-[300px] overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                  {(type?.startsWith('SERVER_') ? nodes : projects).map((item) => (
+                  {(type === 'SERVER_CARD' ? nodes : type === 'CONSTELLATION' ? depinApps : projects).map((item) => (
                     <button
                       key={item.id}
                       onClick={() => setSelectedTarget(item.id)}
@@ -128,7 +145,7 @@ export const AddWidgetModal = ({ onClose, onAdd }: AddWidgetModalProps) => {
                       {selectedTarget === item.id && <div className="w-2 h-2 rounded-full bg-accent" />}
                     </button>
                   ))}
-                  {(type?.startsWith('SERVER_') ? nodes : projects).length === 0 && (
+                  {(type === 'SERVER_CARD' ? nodes : type === 'CONSTELLATION' ? depinApps : projects).length === 0 && (
                     <p className="text-center text-xs text-text-muted py-8 italic">Nenhum alvo encontrado.</p>
                   )}
                 </div>
