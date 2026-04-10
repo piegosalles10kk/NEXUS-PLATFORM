@@ -75,9 +75,9 @@ export default function RegisterPage() {
         inviteCode: form.inviteCode || undefined,
       });
       // Auto-login after registration
-      await login(form.email, form.password);
+      const newUser = await login(form.email, form.password);
       setSuccess(true);
-      setTimeout(() => navigate('/dashboard'), 1200);
+      setTimeout(() => navigate(newUser.role === 'ADM' ? '/admin' : '/dashboard'), 1200);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Erro ao criar conta. Tente novamente.');
     } finally {

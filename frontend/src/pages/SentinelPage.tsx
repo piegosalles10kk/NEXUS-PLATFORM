@@ -11,10 +11,9 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
   Shield, AlertTriangle, Users, Wallet, Trash2, Plus, Ban,
   CheckCircle, RefreshCw, Loader2, Activity,
-  ChevronRight, XCircle, Terminal, Zap, Award, Network,
+  ChevronRight, XCircle, Terminal, Zap, Award, Network, Eye,
 } from 'lucide-react';
 import api from '../services/api';
 import { io, Socket } from 'socket.io-client';
@@ -285,7 +284,6 @@ interface NetNode {
   id: string; name: string; status: string;
   x: number; y: number; vx: number; vy: number;
 }
-interface NetEdge { from: string; to: string }
 
 const NET_W = 480; const NET_H = 240;
 const CX = NET_W / 2; const CY = NET_H / 2;

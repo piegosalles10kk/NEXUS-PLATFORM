@@ -16,8 +16,8 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
-      navigate('/dashboard');
+      const loggedUser = await login(email, password);
+      navigate(loggedUser.role === 'ADM' ? '/admin' : '/dashboard');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Falha no login. Verifique suas credenciais.');
     } finally {

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "acme-client": "^5.4.0",
     "@prisma/client": "^6.4.0",
     "@types/http-proxy-middleware": "^0.19.3",
     "@types/ws": "^8.18.1",

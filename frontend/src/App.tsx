@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './contexts/AuthContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ProtectedRoute, RoleGuard } from './guards/Guards';
 import AppLayout from './components/layout/AppLayout';
 
@@ -24,6 +24,14 @@ import BillingPage from './pages/BillingPage';
 import ProviderPage from './pages/ProviderPage';
 import SonarRadarPage from './pages/SonarRadarPage';
 import SentinelPage from './pages/SentinelPage';
+import AdminHubPage from './pages/AdminHubPage';
+
+// Redireciona para o hub certo baseado no role do usuário logado
+function RootRedirect() {
+  const { user, isAuthenticated } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return <Navigate to={user?.role === 'ADM' ? '/admin' : '/dashboard'} replace />;
+}
 
 function App() {
   return (
@@ -35,6 +43,15 @@ function App() {
           <Route path="/register"        element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password"  element={<ResetPasswordPage />} />
+
+          {/* ── Admin Hub (ADM only) ───────────────────────────────────── */}
+          <Route path="/admin" element={
+            <ProtectedRoute>
+              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
+                <AppLayout><AdminHubPage /></AppLayout>
+              </RoleGuard>
+            </ProtectedRoute>
+          } />
 
           {/* ── Protected — CI/CD ──────────────────────────────────────── */}
           <Route path="/dashboard" element={
@@ -117,7 +134,7 @@ function App() {
           } />
 
           {/* ── Default redirect ────────────────────────────────────────── */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<RootRedirect />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

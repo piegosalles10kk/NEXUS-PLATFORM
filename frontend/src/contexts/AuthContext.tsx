@@ -14,7 +14,7 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
   logout: () => void;
   hasRole: (...roles: string[]) => boolean;
 }
@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(false);
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string): Promise<User> => {
     const response = await api.post('/auth/login', { email, password });
     const { token: newToken, user: newUser } = response.data.data;
 
@@ -52,6 +52,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
     connectSocket();
+    return newUser as User;
   }, []);
 
   const logout = useCallback(() => {

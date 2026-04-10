@@ -30,10 +30,17 @@ export default function Navbar() {
 
       {/* Navigation */}
       <nav className="flex items-center gap-0.5 px-3 flex-1">
-        <NavLink to="/dashboard" className={linkClass}>
-          <LayoutDashboard className="w-[15px] h-[15px] shrink-0" />
-          Painel
-        </NavLink>
+        {hasRole('ADM') ? (
+          <NavLink to="/admin" className={linkClass}>
+            <Shield className="w-[15px] h-[15px] shrink-0" />
+            Hub Admin
+          </NavLink>
+        ) : (
+          <NavLink to="/dashboard" className={linkClass}>
+            <LayoutDashboard className="w-[15px] h-[15px] shrink-0" />
+            Painel
+          </NavLink>
+        )}
 
         <NavLink to="/projects" className={linkClass}>
           <FolderGit2 className="w-[15px] h-[15px] shrink-0" />

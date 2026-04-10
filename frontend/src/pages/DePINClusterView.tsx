@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Network, ArrowLeft, Cpu, MemoryStick, Activity,
   Wifi, WifiOff, Loader2, RefreshCw, Globe,
   CheckCircle, XCircle, Clock, Zap, Star,
+  Link2, Save, AlertCircle,
 } from 'lucide-react';
 import api from '../services/api';
 import { io, Socket } from 'socket.io-client';
@@ -296,6 +297,12 @@ export default function DePINClusterView() {
   const [onlineNodes, setOnlineNodes] = useState<Set<string>>(new Set());
   const socketRef = useRef<Socket | null>(null);
 
+  // Domain management state
+  const [domainInput, setDomainInput] = useState('');
+  const [domainSaving, setDomainSaving] = useState(false);
+  const [domainVerifying, setDomainVerifying] = useState(false);
+  const [domainMsg, setDomainMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   const load = async () => {
     if (!id) return;
     setLoading(true);
@@ -354,6 +361,42 @@ export default function DePINClusterView() {
       <div className="text-center py-24 text-text-secondary">App não encontrado.</div>
     );
   }
+
+  const handleAssignDomain = async () => {
+    if (!app || !domainInput.trim()) return;
+    setDomainSaving(true);
+    setDomainMsg(null);
+    try {
+      await api.post(`/depin/apps/${app.id}/domain`, { domain: domainInput.trim() });
+      setDomainMsg({ type: 'success', text: 'Domínio salvo. Verificando DNS e emitindo certificado SSL...' });
+      setDomainInput('');
+      load(); // refresh app to show new domain + sslStatus
+    } catch (err: any) {
+      setDomainMsg({ type: 'error', text: err?.response?.data?.message ?? 'Erro ao salvar domínio.' });
+    } finally {
+      setDomainSaving(false);
+    }
+  };
+
+  const handleVerifyDns = async () => {
+    if (!app) return;
+    setDomainVerifying(true);
+    setDomainMsg(null);
+    try {
+      const res = await api.get(`/depin/apps/${app.id}/domain/verify`);
+      const { dnsOk } = res.data.data;
+      if (dnsOk) {
+        setDomainMsg({ type: 'success', text: 'DNS verificado. O certificado SSL está sendo provisionado.' });
+      } else {
+        setDomainMsg({ type: 'error', text: 'DNS ainda não propagou. Aguarde e tente novamente.' });
+      }
+      load();
+    } catch (err: any) {
+      setDomainMsg({ type: 'error', text: err?.response?.data?.message ?? 'Falha ao verificar DNS.' });
+    } finally {
+      setDomainVerifying(false);
+    }
+  };
 
   const onlineCount = app.assignments.filter(a => onlineNodes.has(a.node.id)).length;
   const runningCount = app.assignments.filter(a => a.status === 'RUNNING').length;
@@ -497,7 +540,7 @@ export default function DePINClusterView() {
         />
         <CardDivider />
 
-        <div className="space-y-4">
+        <div className="space-y-5">
           {/* Ingress URL */}
           <div>
             <p className="text-[12px] text-text-muted mb-1.5">Endpoint Ingress (sempre disponível)</p>
@@ -507,33 +550,82 @@ export default function DePINClusterView() {
             </div>
           </div>
 
-          {/* Custom domain status */}
-          {app.customDomain ? (
-            <div>
-              <p className="text-[12px] text-text-muted mb-1.5">Domínio personalizado</p>
+          {/* Custom domain */}
+          <div className="space-y-3">
+            <p className="text-[12px] font-semibold text-text-secondary uppercase tracking-widest">Domínio Personalizado</p>
+
+            {/* CNAME instruction */}
+            <div className="rounded-lg border border-dashed border-border bg-bg-input/50 p-3 space-y-2">
+              <p className="text-[11px] text-text-muted">1. Crie um registro CNAME no seu DNS apontando para:</p>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-input border border-border font-mono text-[12px] text-accent-light select-all">
+                {import.meta.env.VITE_GATEWAY_HOSTNAME ?? 'gateway.nexus.cloud'}
+              </div>
+              <p className="text-[11px] text-text-muted">2. Após a propagação DNS, informe o domínio abaixo e o certificado SSL é emitido automaticamente.</p>
+            </div>
+
+            {/* Active domain display */}
+            {app.customDomain && (
               <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-bg-input border border-border">
-                <span className="font-mono text-[13px] text-text-primary">{app.customDomain}</span>
-                <span className={`badge ${
-                  app.sslStatus === 'ACTIVE'  ? 'badge-success' :
-                  app.sslStatus === 'FAILED'  ? 'badge-danger'  : 'badge-warning'
-                }`}>
-                  SSL {app.sslStatus}
-                </span>
+                <div className="flex items-center gap-2">
+                  <Globe className="w-3.5 h-3.5 text-text-muted" />
+                  <span className="font-mono text-[13px] text-text-primary">{app.customDomain}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`badge ${
+                    app.sslStatus === 'ACTIVE'  ? 'badge-success' :
+                    app.sslStatus === 'FAILED'  ? 'badge-danger'  : 'badge-warning'
+                  }`}>
+                    SSL {app.sslStatus ?? 'PENDING'}
+                  </span>
+                  {app.sslStatus !== 'ACTIVE' && (
+                    <button
+                      onClick={handleVerifyDns}
+                      disabled={domainVerifying}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-bg-card-hover border border-border text-[11px] font-semibold text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                    >
+                      {domainVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Verificar DNS
+                    </button>
+                  )}
+                </div>
               </div>
+            )}
+
+            {/* Input to set / change domain */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder={app.customDomain ? 'Substituir por outro domínio...' : 'meuapp.exemplo.com'}
+                value={domainInput}
+                onChange={e => setDomainInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAssignDomain(); }}
+                className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/60 font-mono transition-colors"
+              />
+              <button
+                onClick={handleAssignDomain}
+                disabled={domainSaving || !domainInput.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent hover:bg-accent-light disabled:opacity-50 text-white text-[13px] font-semibold transition-all"
+              >
+                {domainSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                {domainSaving ? 'Salvando...' : 'Ativar'}
+              </button>
             </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-[12px] text-text-muted">
-                Aponte um CNAME do seu domínio para:
-              </p>
-              <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-bg-input border border-border font-mono text-[13px] text-text-secondary">
-                gateway.nexus.cloud
+
+            {/* Feedback message */}
+            {domainMsg && (
+              <div className={`flex items-start gap-2 px-3 py-2.5 rounded-lg border text-[12px] ${
+                domainMsg.type === 'success'
+                  ? 'bg-success/10 border-success/30 text-success'
+                  : 'bg-danger/10 border-danger/30 text-danger'
+              }`}>
+                {domainMsg.type === 'success'
+                  ? <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  : <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                }
+                {domainMsg.text}
               </div>
-              <p className="text-[12px] text-text-muted">
-                Após a propagação DNS, o certificado SSL é emitido automaticamente em até 2 minutos.
-              </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </Card>
     </div>
