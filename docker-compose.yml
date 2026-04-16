@@ -53,6 +53,28 @@ services:
     networks:
       - 10kk-network
 
+  # ── TimescaleDB (Sprint 20.1 — time-series metrics store) ──────────────────
+  nexus-timescale:
+    image: timescale/timescaledb:latest-pg16
+    container_name: 10kk-timescale
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${TSDB_USER:-nexus_tsdb}
+      POSTGRES_PASSWORD: ${TSDB_PASSWORD:-nexus_tsdb_pass}
+      POSTGRES_DB: ${TSDB_DB:-nexus_metrics}
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TSDB_USER:-nexus_tsdb} -d ${TSDB_DB:-nexus_metrics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - 10kk-network
+
   # ── Redis ───────────────────────────────────────────────────────────────────
   cicd-redis:
     image: redis:7-alpine
@@ -88,12 +110,16 @@ services:
       # Informa o Docker Socket Proxy para criação de containers (ex: deploys locais)
       - DOCKER_PROXY_HOST=tcp://10kk-docker-proxy:2375
       - GATEWAY_CONF_PATH=/shared/gateway.conf
+      - TSDB_URL=postgresql://${TSDB_USER:-nexus_tsdb}:${TSDB_PASSWORD:-nexus_tsdb_pass}@10kk-timescale:5432/${TSDB_DB:-nexus_metrics}
+      - ML_SERVICE_URL=http://10kk-ml:8500
     volumes:
       - gateway_conf:/shared
     depends_on:
       cicd-postgres:
         condition: service_healthy
       cicd-redis:
+        condition: service_healthy
+      nexus-timescale:
         condition: service_healthy
       docker-proxy:
         condition: service_started
@@ -119,6 +145,23 @@ services:
       - gateway_conf:/etc/nginx/nexus-gateway
     depends_on:
       - cicd-backend
+    networks:
+      - 10kk-network
+
+  # ── ML Microservice (Sprint 20.2 — XGBoost ChurnRisk scorer) ────────────────
+  nexus-ml:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: 10kk-ml
+    restart: always
+    ports:
+      - "8500:8500"
+    environment:
+      - REDIS_URL=redis://10kk-redis:6379
+    depends_on:
+      cicd-redis:
+        condition: service_healthy
     networks:
       - 10kk-network
 
@@ -169,5 +212,6 @@ networks:
 
 volumes:
   postgres_data:
+  timescale_data:
   gateway_conf:
   agent_projects:

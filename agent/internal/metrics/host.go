@@ -22,7 +22,10 @@ type HostMetrics struct {
 	DiskUsed    uint64  `json:"disk_used"`
 	DiskPercent float64 `json:"disk_percent"`
 	// GPU information (empty slice on CPU-only hosts)
-	GPUs        []GPUInfo `json:"gpus"`
+	GPUs []GPUInfo `json:"gpus"`
+	// Sprint 19.1 — auto infra tag. Set to "MICRO_EDGE" when total RAM < 2 GB.
+	// The master uses this to set node.infraType on first heartbeat.
+	InfraTag string `json:"infraTag,omitempty"`
 }
 
 // StartBroadcaster collects host metrics every 10 s and sends them to ch.
@@ -80,6 +83,13 @@ func collect() (HostMetrics, error) {
 	// GPU — non-fatal; returns empty slice on CPU-only hosts
 	gpus := collectGPUs()
 
+	// Sprint 19.1 — auto-tag MICRO_EDGE nodes (< 2 GB total RAM)
+	infraTag := ""
+	const microEdgeThreshold = 2 * 1024 * 1024 * 1024 // 2 GB in bytes
+	if vmStat.Total > 0 && vmStat.Total < microEdgeThreshold {
+		infraTag = "MICRO_EDGE"
+	}
+
 	return HostMetrics{
 		CPUPercent:  cpuPct,
 		MemTotal:    vmStat.Total,
@@ -89,5 +99,6 @@ func collect() (HostMetrics, error) {
 		DiskUsed:    diskStat.Used,
 		DiskPercent: diskStat.UsedPercent,
 		GPUs:        gpus,
+		InfraTag:    infraTag,
 	}, nil
 }

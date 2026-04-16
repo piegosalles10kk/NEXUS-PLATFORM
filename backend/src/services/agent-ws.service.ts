@@ -25,6 +25,7 @@ import { env } from '../config/env';
 import prisma from '../config/database';
 import { getCACert, getCAKey } from './ca.service';
 import { getRedisClient } from '../config/redis';
+import { writeMetric } from './tsdb.service';
 
 // Map nodeId → WebSocket, so the master can push commands to specific agents
 const agentSockets = new Map<string, WebSocket>();
@@ -436,11 +437,28 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
           if (typeof msg.data?.cpuCores === 'number') updateData.cpuCores = msg.data.cpuCores;
           if (typeof msg.data?.ramTotal === 'number')  updateData.ramMb    = Math.round(msg.data.ramTotal / (1024 * 1024));
 
+          // Sprint 19.1 — auto-tag MICRO_EDGE when agent reports < 2 GB RAM
+          if (msg.data?.infraTag === 'MICRO_EDGE') {
+            updateData.infraType = 'MICRO_EDGE';
+          }
+
           if (Object.keys(updateData).length > 0) {
             (prisma.node as any).update({ where: { id: nodeId }, data: updateData }).catch(console.error);
           }
 
           io.emit('node:metrics', { nodeId, data: msg.data });
+
+          // Sprint 20.1 — write to TimescaleDB (fire-and-forget)
+          writeMetric({
+            nodeId,
+            cpuPct:  typeof msg.data?.cpu_percent === 'number' ? msg.data.cpu_percent : undefined,
+            ramPct:  typeof msg.data?.mem_percent  === 'number' ? msg.data.mem_percent  : undefined,
+            diskPct: typeof msg.data?.disk_percent === 'number' ? msg.data.disk_percent : undefined,
+            gpuPct:  Array.isArray(msg.data?.gpus) && msg.data.gpus.length > 0
+              ? (msg.data.gpus[0]?.utilization ?? undefined)
+              : undefined,
+          }).catch(() => {/* ignore — TSDB is optional */});
+
           break;
         }
 

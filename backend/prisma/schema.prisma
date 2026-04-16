@@ -580,6 +580,7 @@ enum InfraType {
   SWARM           // DePIN community node (default)
   CLOUD_MANAGED   // Nexus-owned physical server
   ON_PREMISE      // Enterprise on-prem node
+  MICRO_EDGE      // Sprint 19.1 — ARM/IoT node with < 2 GB RAM; runs WASM directly (no Docker)
 }
 
 enum BenchmarkTier {

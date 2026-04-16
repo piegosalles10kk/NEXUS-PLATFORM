@@ -19,7 +19,10 @@
       "Bash(curl -s http://localhost:4500/depin/ingress-demo/api/orders/123)",
       "Bash(powershell.exe -Command 'try { $c = New-Object Net.Sockets.TcpClient\\('\\\\''127.0.0.1'\\\\'', 54342\\); Write-Host '\\\\''CONNECTED port 54342'\\\\''; $c.Close\\(\\) } catch { Write-Host '\\\\''FAILED:'\\\\'' $_.Exception.Message }')",
       "Bash(powershell.exe -Command \"\\(New-Object Net.Sockets.TcpClient\\('127.0.0.1', 54342\\)\\).Connected\")",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(xargs -I {} bash -c 'echo \"=== {} ===\" && head -30 \"{}\"')",
+      "Bash(xargs -I {} bash -c 'echo \"=== $\\(basename {}\\) ===\" && head -30 \"{}\"')",
+      "Bash(awk '{print $9, \"\\(\" $5 \"\\)\"}')"
     ],
     "additionalDirectories": [
       "c:\\Users\\piego\\.claude\\projects\\c--Users-piego-Desktop-Projeto-Nexus-Nexus-Deployment-Plataform-main\\memory"

@@ -17,4 +17,7 @@ router.patch( '/apps/:id',             authenticate, authorize('ADM', 'TECNICO')
 router.delete('/apps/:id',        authenticate, authorize('ADM', 'TECNICO'), ctrl.removeApp);
 router.post(  '/apps/:id/reassign', authenticate, authorize('ADM'),          ctrl.reassignNode);
 
+// Sprint 18.2 — Docker Compose deploy
+router.post('/deploy-compose', authenticate, authorize('ADM', 'TECNICO'), ctrl.deployCompose);
+
 export default router;

@@ -14,6 +14,44 @@ import { getRedisClient } from '../config/redis';
 import { getAgentSocket } from './agent-ws.service';
 import { consolidateDailyUsage } from './wallet.service';
 
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL ?? '';
+
+/**
+ * fetchChurnRisk — Sprint 20.2.
+ * Calls the Python ML microservice to get the churn probability for a node.
+ * Returns null if the service is unavailable (graceful degradation).
+ */
+async function fetchChurnRisk(
+  nodeId: string,
+  cpuPct: number,
+  ramPct: number,
+): Promise<{ churnProb: number; churnRisk: string } | null> {
+  if (!ML_SERVICE_URL) return null;
+  try {
+    const res = await fetch(`${ML_SERVICE_URL}/predict/churn`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        node_id:     nodeId,
+        cpu_pct:     cpuPct,
+        ram_pct:     ramPct,
+        disk_pct:    0,
+        net_rx_mb:   0,
+        net_tx_mb:   0,
+        gpu_pct:     0,
+        uptime_hours: 24,
+        hour_of_day: new Date().getUTCHours(),
+      }),
+      signal: AbortSignal.timeout(2000), // 2s timeout — non-blocking
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { churn_prob: number; churn_risk: string };
+    return { churnProb: data.churn_prob, churnRisk: data.churn_risk };
+  } catch {
+    return null; // ML service unavailable — scheduler continues without it
+  }
+}
+
 export interface NodeCandidate {
   id: string;
   name: string;
@@ -131,6 +169,14 @@ export async function selectNodes(options: SchedulerOptions = {}): Promise<NodeC
       const cpuPercent = telemetry?.cpuPercent ?? 50;
       const memPercent = telemetry?.memPercent ?? 50;
 
+      // Sprint 20.2 — factor ChurnRisk into node score (HIGH risk adds 30 penalty pts)
+      let churnPenalty = 0;
+      const churnResult = await fetchChurnRisk(node.id, cpuPercent, memPercent);
+      if (churnResult) {
+        if (churnResult.churnRisk === 'HIGH')   churnPenalty = 30;
+        else if (churnResult.churnRisk === 'MEDIUM') churnPenalty = 10;
+      }
+
       return {
         id: node.id,
         name: node.name,
@@ -139,7 +185,7 @@ export async function selectNodes(options: SchedulerOptions = {}): Promise<NodeC
         city: node.city,
         cpuPercent,
         memPercent,
-        score: computeScore(cpuPercent, memPercent),
+        score: computeScore(cpuPercent, memPercent) + churnPenalty,
         connected,
         gpuCount: node.gpuCount,
         gpuModel: node.gpuModel,

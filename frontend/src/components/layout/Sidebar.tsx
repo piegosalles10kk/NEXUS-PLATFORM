@@ -1,8 +1,8 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import {
-  LayoutDashboard, Users, LogOut, Shield, Settings,
-  Globe, Cloud, FolderGit2, Network, Cpu, ChevronDown, Radio,
+  LayoutDashboard, LogOut, Shield, Settings,
+  Globe, Cloud, FolderGit2, Network, Cpu, ChevronDown, Radio, Lock,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -20,6 +20,8 @@ export default function Navbar() {
         : 'font-medium text-text-secondary hover:text-text-primary hover:bg-white/[0.03]'
     }`;
 
+  const isAdm = hasRole('ADM');
+
   return (
     <header className="glass-nav fixed top-0 left-0 right-0 h-13 z-50 flex items-center">
       {/* Logo */}
@@ -30,10 +32,18 @@ export default function Navbar() {
 
       {/* Navigation */}
       <nav className="flex items-center gap-0.5 px-3 flex-1">
-        {hasRole('ADM') ? (
-          <NavLink to="/admin" className={linkClass}>
+
+        {/* ── Admin Global entry (ADM only) ── */}
+        {isAdm ? (
+          <NavLink to="/admin" className={({ isActive }) =>
+            `flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all duration-150 ${
+              isActive
+                ? 'font-semibold text-text-primary bg-danger/10 border border-danger/20'
+                : 'font-medium text-danger hover:text-text-primary hover:bg-danger/10'
+            }`
+          }>
             <Shield className="w-[15px] h-[15px] shrink-0" />
-            Hub Admin
+            Admin Global
           </NavLink>
         ) : (
           <NavLink to="/dashboard" className={linkClass}>
@@ -71,9 +81,7 @@ export default function Navbar() {
                 onClick={() => setDepinOpen(false)}
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
-                    isActive
-                      ? 'font-semibold text-text-primary'
-                      : 'font-medium text-text-secondary hover:text-text-primary'
+                    isActive ? 'font-semibold text-text-primary' : 'font-medium text-text-secondary hover:text-text-primary'
                   }`
                 }
               >
@@ -85,9 +93,7 @@ export default function Navbar() {
                 onClick={() => setDepinOpen(false)}
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
-                    isActive
-                      ? 'font-semibold text-text-primary'
-                      : 'font-medium text-text-secondary hover:text-text-primary'
+                    isActive ? 'font-semibold text-text-primary' : 'font-medium text-text-secondary hover:text-text-primary'
                   }`
                 }
               >
@@ -99,9 +105,7 @@ export default function Navbar() {
                 onClick={() => setDepinOpen(false)}
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
-                    isActive
-                      ? 'font-semibold text-text-primary'
-                      : 'font-medium text-text-secondary hover:text-text-primary'
+                    isActive ? 'font-semibold text-text-primary' : 'font-medium text-text-secondary hover:text-text-primary'
                   }`
                 }
               >
@@ -113,9 +117,7 @@ export default function Navbar() {
                 onClick={() => setDepinOpen(false)}
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 px-3.5 py-2 text-sm transition-colors ${
-                    isActive
-                      ? 'font-semibold text-text-primary'
-                      : 'font-medium text-text-secondary hover:text-text-primary'
+                    isActive ? 'font-semibold text-text-primary' : 'font-medium text-text-secondary hover:text-text-primary'
                   }`
                 }
               >
@@ -128,28 +130,21 @@ export default function Navbar() {
           )}
         </div>
 
-        {(hasRole('ADM') || hasRole('TECNICO')) && (
+        {(isAdm || hasRole('TECNICO')) && (
           <NavLink to="/gateway" className={linkClass}>
             <Globe className="w-[15px] h-[15px] shrink-0" />
             Gateway
           </NavLink>
         )}
 
-        {hasRole('ADM') && (
+        {isAdm && (
           <NavLink to="/cloud" className={linkClass}>
             <Cloud className="w-[15px] h-[15px] shrink-0" />
             Cloud
           </NavLink>
         )}
 
-        {hasRole('ADM') && (
-          <NavLink to="/admin/users" className={linkClass}>
-            <Users className="w-[15px] h-[15px] shrink-0" />
-            Usuários
-          </NavLink>
-        )}
-
-        {hasRole('ADM') && (
+        {isAdm && (
           <NavLink to="/settings" className={linkClass}>
             <Settings className="w-[15px] h-[15px] shrink-0" />
             Config
@@ -157,7 +152,7 @@ export default function Navbar() {
         )}
       </nav>
 
-      {/* User */}
+      {/* User / Session */}
       <div className="flex items-center gap-3 px-4 h-full border-l border-white/[0.06]">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-bg-card border border-border flex items-center justify-center text-[11px] font-bold text-text-primary shrink-0">
@@ -166,8 +161,17 @@ export default function Navbar() {
           <div className="hidden md:block">
             <p className="text-[13px] font-semibold text-text-primary leading-none">{user?.name}</p>
             <div className="flex items-center gap-1 mt-0.5">
-              <Shield className="w-3 h-3 text-accent-light" />
-              <span className="text-[11px] text-accent-light font-medium">{user?.role}</span>
+              {isAdm ? (
+                <>
+                  <Lock className="w-3 h-3 text-danger" />
+                  <span className="text-[11px] text-danger font-bold">GLOBAL ADM</span>
+                </>
+              ) : (
+                <>
+                  <Shield className="w-3 h-3 text-accent-light" />
+                  <span className="text-[11px] text-accent-light font-medium">{user?.role}</span>
+                </>
+              )}
             </div>
           </div>
         </div>

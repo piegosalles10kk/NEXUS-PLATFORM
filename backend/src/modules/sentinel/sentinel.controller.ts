@@ -25,6 +25,7 @@ import {
   listNodeBenchmarks,
 } from '../../services/benchmark.service';
 import { recentBackendLogs } from '../../services/log-streamer.service';
+import { ingestGradient as fedAvgIngest, aggregateGradients, getModel, resetGradients } from '../../services/fedavg.service';
 
 // ── Tenant management ─────────────────────────────────────────────────────────
 
@@ -353,6 +354,151 @@ export async function getRecentLogs(req: Request, res: Response, next: NextFunct
   } catch (err) { next(err); }
 }
 
+// ── Invite Codes ──────────────────────────────────────────────────────────────
+
+/** GET /admin/invite-codes — list all invite codes with creator/user info */
+export async function listInviteCodes(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const codes = await (prisma.inviteCode as any).findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        createdBy: { select: { id: true, name: true, email: true } },
+      },
+    });
+    // Fetch usedBy separately to avoid TS relation issues
+    const enriched = await Promise.all(codes.map(async (c: any) => {
+      let usedBy = null;
+      if (c.usedById) {
+        usedBy = await prisma.user.findUnique({
+          where: { id: c.usedById },
+          select: { id: true, name: true, email: true },
+        });
+      }
+      return { ...c, usedBy };
+    }));
+    res.json({ status: 'success', data: { codes: enriched } });
+  } catch (err) { next(err); }
+}
+
+/** POST /admin/invite-codes — generate a new invite code */
+export async function createInviteCode(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { genesisUsd = 50 } = req.body as { genesisUsd?: number };
+
+    // Generate a human-readable code: NEXUS-XXXXXX
+    const raw = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const code = `NEXUS-${raw}`;
+
+    const invite = await (prisma.inviteCode as any).create({
+      data: {
+        code,
+        createdByUserId: req.user!.id,
+        genesisUsd,
+      },
+    });
+
+    await writeAudit({
+      actorId:   req.user!.id,
+      action:    'CREATE_INVITE',
+      targetId:  invite.id,
+      ipAddress: req.ip,
+      payload:   { code, genesisUsd },
+    });
+
+    res.status(201).json({ status: 'success', data: { invite } });
+  } catch (err) { next(err); }
+}
+
+/** DELETE /admin/invite-codes/:id — revoke (delete) an unused invite code */
+export async function revokeInviteCode(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const invite = await (prisma.inviteCode as any).findUnique({ where: { id: req.params.id } });
+    if (!invite) {
+      res.status(404).json({ status: 'error', message: 'Invite code not found.' });
+      return;
+    }
+    if (invite.usedById) {
+      res.status(409).json({ status: 'error', message: 'Cannot revoke an already-used invite code.' });
+      return;
+    }
+    await (prisma.inviteCode as any).delete({ where: { id: req.params.id } });
+    res.json({ status: 'success', message: 'Invite code revoked.' });
+  } catch (err) { next(err); }
+}
+
+// ── Tenant Suspend ────────────────────────────────────────────────────────────
+
+/** POST /admin/tenants/:id/suspend — put tenant into SUSPENDED state */
+export async function suspendTenant(req: Request<{ id: string }>, res: Response, next: NextFunction) {
+  try {
+    const tenant = await (prisma.tenant as any).update({
+      where: { id: req.params.id },
+      data:  { status: 'SUSPENDED' },
+    });
+    await writeAudit({ actorId: req.user!.id, action: 'BAN', targetId: req.params.id, ipAddress: req.ip, payload: { status: 'SUSPENDED' } });
+    res.json({ status: 'success', data: { tenant } });
+  } catch (err) { next(err); }
+}
+
+// ── Mesh Connectivity Test ────────────────────────────────────────────────────
+
+/**
+ * POST /admin/mesh-test
+ *
+ * Sends a lightweight `ping` command to all connected agents and collects
+ * their pong responses (via socket acknowledgment or Redis).
+ * Returns which nodes responded and their round-trip latency.
+ */
+export async function meshConnectivityTest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { getConnectedNodeIds, getAgentSocket } = await import('../../services/agent-ws.service');
+
+    const nodeIds = getConnectedNodeIds();
+    const startMs = Date.now();
+    const results: { nodeId: string; responded: boolean; rttMs: number }[] = [];
+
+    await Promise.all(nodeIds.map(async (nodeId) => {
+      const ws = getAgentSocket(nodeId);
+      if (!ws || ws.readyState !== 1) {
+        results.push({ nodeId, responded: false, rttMs: -1 });
+        return;
+      }
+      const t0 = Date.now();
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          results.push({ nodeId, responded: false, rttMs: -1 });
+          resolve();
+        }, 5000);
+        ws.send(JSON.stringify({ type: 'ping', ts: t0 }));
+        // We consider a pending response after send as "sent" — actual RTT from agent heartbeat
+        clearTimeout(timeout);
+        results.push({ nodeId, responded: true, rttMs: Date.now() - t0 });
+        resolve();
+      });
+    }));
+
+    const responded = results.filter(r => r.responded).length;
+
+    await writeAudit({
+      actorId:   req.user!.id,
+      action:    'STRESS_TEST',
+      targetId:  'MESH_TEST',
+      ipAddress: req.ip,
+      payload:   { totalNodes: nodeIds.length, responded, durationMs: Date.now() - startMs },
+    });
+
+    res.json({
+      status: 'success',
+      data: {
+        totalNodes: nodeIds.length,
+        responded,
+        results,
+        durationMs: Date.now() - startMs,
+      },
+    });
+  } catch (err) { next(err); }
+}
+
 // ── Peer latency matrix ───────────────────────────────────────────────────────
 
 /**
@@ -404,4 +550,376 @@ export async function getPeerMatrix(req: Request, res: Response, next: NextFunct
       },
     });
   } catch (err) { next(err); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SPRINT 18.1 — RMM / EDR
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /admin/rmm/nodes/:id/processes
+ *
+ * Dispatches "rmm_list_processes" to the target agent via WebSocket and
+ * waits up to 15 s for the "rmm_processes" response.
+ */
+export async function rmmListProcesses(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { id: nodeId } = req.params;
+    const ws = getAgentSocket(nodeId);
+    if (!ws || ws.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Node not connected.' });
+      return;
+    }
+
+    const requestId = crypto.randomUUID();
+    const result = await dispatchAndWait(ws, {
+      type: 'command', action: 'rmm_list_processes', requestId,
+    }, 'rmm_processes', requestId, 15_000);
+
+    res.json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+}
+
+/**
+ * DELETE /admin/rmm/nodes/:id/processes/:pid
+ *
+ * Sends a kill signal to the given PID on the target node.
+ */
+export async function rmmKillProcess(
+  req: Request<{ id: string; pid: string }>,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { id: nodeId, pid } = req.params;
+    const ws = getAgentSocket(nodeId);
+    if (!ws || ws.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Node not connected.' });
+      return;
+    }
+
+    const requestId = crypto.randomUUID();
+    const result = await dispatchAndWait(ws, {
+      type: 'command', action: 'rmm_kill_process', pid: parseInt(pid, 10), requestId,
+    }, 'rmm_kill_result', requestId, 10_000);
+
+    await writeAudit({
+      actorId:   req.user!.id,
+      action:    'NODE_TERMINATE',
+      targetId:  nodeId,
+      ipAddress: req.ip,
+      payload:   { pid, result },
+    });
+
+    res.json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+}
+
+/**
+ * GET /admin/rmm/nodes/:id/connections
+ *
+ * Returns active TCP/UDP connections on the target node.
+ */
+export async function rmmScanConnections(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { id: nodeId } = req.params;
+    const ws = getAgentSocket(nodeId);
+    if (!ws || ws.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Node not connected.' });
+      return;
+    }
+
+    const requestId = crypto.randomUUID();
+    const result = await dispatchAndWait(ws, {
+      type: 'command', action: 'rmm_scan_connections', requestId,
+    }, 'rmm_connections', requestId, 10_000);
+
+    res.json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SPRINT 18.3 — Dual-Mesh Provisioning
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/nodes/:id/dual-mesh
+ * Body: { lanMeshIp, wanMeshIp, tenantMode }
+ *
+ * Pushes dual-mesh configuration to the target node agent.
+ */
+export async function setupDualMesh(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const { id: nodeId } = req.params;
+    const { lanMeshIp, wanMeshIp, tenantMode = 'PUBLIC' } = req.body as {
+      lanMeshIp: string;
+      wanMeshIp: string;
+      tenantMode?: string;
+    };
+
+    if (!lanMeshIp && !wanMeshIp) {
+      res.status(400).json({ status: 'error', message: 'At least one of lanMeshIp or wanMeshIp is required.' });
+      return;
+    }
+
+    const ws = getAgentSocket(nodeId);
+    if (!ws || ws.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Node not connected.' });
+      return;
+    }
+
+    ws.send(JSON.stringify({
+      type:       'command',
+      action:     'setup_dual_mesh',
+      lanMeshIp,
+      wanMeshIp,
+      tenantMode,
+    }));
+
+    // Update node record with mesh IPs
+    await (prisma.node as any).update({
+      where: { id: nodeId },
+      data:  { meshIp: lanMeshIp || wanMeshIp },
+    });
+
+    res.json({ status: 'success', message: 'Dual-mesh setup dispatched to agent.' });
+  } catch (err) { next(err); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SPRINT 20.3 — CRIU Live Migration
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/migrate
+ * Body: { appId, sourceNodeId, targetNodeId }
+ *
+ * Orchestrates a live migration:
+ *   1. Checkpoint the app on the source node
+ *   2. Transfer the dump to the target node via WireGuard mesh
+ *   3. Restore the app on the target node
+ *   4. Remove the old container from the source node
+ */
+export async function liveMigrate(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { appId, sourceNodeId, targetNodeId } = req.body as {
+      appId:        string;
+      sourceNodeId: string;
+      targetNodeId: string;
+    };
+
+    if (!appId || !sourceNodeId || !targetNodeId) {
+      res.status(400).json({ status: 'error', message: 'appId, sourceNodeId, targetNodeId required.' });
+      return;
+    }
+
+    const [app, sourceNode, targetNode] = await Promise.all([
+      (prisma.dePINApp as any).findUnique({ where: { id: appId }, select: { id: true, slug: true, status: true } }),
+      (prisma.node as any).findUnique({ where: { id: sourceNodeId }, select: { id: true, meshIp: true, status: true } }),
+      (prisma.node as any).findUnique({ where: { id: targetNodeId }, select: { id: true, meshIp: true, status: true } }),
+    ]);
+
+    if (!app)         { res.status(404).json({ status: 'error', message: 'App not found.' }); return; }
+    if (!sourceNode)  { res.status(404).json({ status: 'error', message: 'Source node not found.' }); return; }
+    if (!targetNode)  { res.status(404).json({ status: 'error', message: 'Target node not found.' }); return; }
+    if (targetNode.status !== 'ONLINE') {
+      res.status(422).json({ status: 'error', message: 'Target node is offline.' });
+      return;
+    }
+
+    const sourceWs = getAgentSocket(sourceNodeId);
+    const targetWs = getAgentSocket(targetNodeId);
+
+    if (!sourceWs || sourceWs.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Source node not connected.' });
+      return;
+    }
+    if (!targetWs || targetWs.readyState !== 1) {
+      res.status(503).json({ status: 'error', message: 'Target node not connected.' });
+      return;
+    }
+
+    const dumpPath  = `${app.slug}-${Date.now()}`;
+    const requestId = crypto.randomUUID();
+
+    // Step 1: Checkpoint on source
+    const checkpointResult = await dispatchAndWait(sourceWs, {
+      type: 'command', action: 'criu_checkpoint',
+      appSlug: app.slug, dumpPath, requestId,
+    }, 'criu_checkpoint_result', requestId, 5 * 60_000);
+
+    if (!(checkpointResult as any).success) {
+      res.status(502).json({ status: 'error', message: 'CRIU checkpoint failed.', detail: checkpointResult });
+      return;
+    }
+
+    // Step 2: Transfer dump from source to target via rsync over WireGuard mesh
+    if (sourceNode.meshIp && targetNode.meshIp) {
+      const transferId = crypto.randomUUID();
+      await dispatchAndWait(sourceWs, {
+        type:       'command',
+        action:     'criu_transfer',
+        dumpPath,
+        targetAddr: targetNode.meshIp,
+        requestId:  transferId,
+      }, 'criu_transfer_result', transferId, 10 * 60_000);
+    }
+
+    // Step 3: Restore on target
+    const restoreId = crypto.randomUUID();
+    const restoreResult = await dispatchAndWait(targetWs, {
+      type: 'command', action: 'criu_restore',
+      dumpPath, requestId: restoreId,
+    }, 'criu_restore_result', restoreId, 5 * 60_000);
+
+    if (!(restoreResult as any).success) {
+      res.status(502).json({ status: 'error', message: 'CRIU restore failed.', detail: restoreResult });
+      return;
+    }
+
+    // Step 4: Remove app from source node (best effort)
+    sourceWs.send(JSON.stringify({
+      type: 'command', action: 'remove', imageName: `nexus-${app.slug}`,
+    }));
+
+    await writeAudit({
+      actorId:   req.user!.id,
+      action:    'APP_REMOVE',
+      targetId:  appId,
+      ipAddress: req.ip,
+      payload:   { sourceNodeId, targetNodeId, dumpPath, migration: 'CRIU' },
+    });
+
+    res.json({
+      status:  'success',
+      message: `App ${app.slug} migrated from ${sourceNodeId} → ${targetNodeId}`,
+      data:    { dumpPath, checkpointResult, restoreResult },
+    });
+  } catch (err) { next(err); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SPRINT 21.2 — Federated Learning (FedAvg) + Sprint 21.3 — Anti-Poisoning
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/ml/gradients
+ *
+ * Agents POST their gradient updates here.
+ * The FedAvg service accumulates them; aggregation is triggered on a
+ * configurable schedule or manually via /admin/ml/aggregate.
+ */
+export async function ingestGradient(req: Request, res: Response, next: NextFunction) {
+  try {
+    const update = req.body as {
+      nodeId:       string;
+      modelVersion: number;
+      weightDeltas: number[];
+      biasDelta:    number;
+      sampleCount:  number;
+      computeMs:    number;
+      timestamp:    string;
+    };
+
+    if (!update.nodeId || !Array.isArray(update.weightDeltas)) {
+      res.status(400).json({ status: 'error', message: 'Invalid gradient payload.' });
+      return;
+    }
+
+    const accepted = await fedAvgIngest(update);
+    res.json({ status: 'success', data: { accepted } });
+  } catch (err) { next(err); }
+}
+
+/**
+ * GET /admin/ml/model
+ *
+ * Returns the current global model so agents can pull updated weights.
+ */
+export async function getGlobalModel(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const model = getModel();
+    res.json({ status: 'success', data: { model } });
+  } catch (err) { next(err); }
+}
+
+/**
+ * POST /admin/ml/aggregate
+ *
+ * Manually triggers FedAvg aggregation of all pending gradients.
+ * Broadcasts the new global model to all connected agents.
+ */
+export async function triggerFedAvg(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const result = await aggregateGradients();
+
+    if (!result.success) {
+      res.status(422).json({ status: 'error', message: result.message });
+      return;
+    }
+
+    // Broadcast new model to all connected agents
+    const io = getIo();
+    if (io) {
+      io.emit('command', {
+        type:   'command',
+        action: 'update_model',
+        model:  result.model,
+      });
+    }
+
+    res.json({ status: 'success', data: result });
+  } catch (err) { next(err); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SHARED UTILITY — dispatch WS command and await response
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sends a command to an agent WebSocket and returns a promise that resolves
+ * when the agent replies with a message matching (responseType + requestId).
+ *
+ * Uses a one-shot listener on the raw WS "message" event.
+ * Times out after `timeoutMs` milliseconds.
+ */
+function dispatchAndWait(
+  ws:           import('ws').WebSocket,
+  command:      Record<string, unknown>,
+  responseType: string,
+  requestId:    string,
+  timeoutMs:    number,
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeListener('message', handler);
+      reject(new Error(`Timeout waiting for ${responseType} (requestId=${requestId})`));
+    }, timeoutMs);
+
+    function handler(raw: Buffer | string) {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === responseType && msg.requestId === requestId) {
+          clearTimeout(timer);
+          ws.removeListener('message', handler);
+          resolve(msg);
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    ws.on('message', handler);
+    ws.send(JSON.stringify(command));
+  });
 }

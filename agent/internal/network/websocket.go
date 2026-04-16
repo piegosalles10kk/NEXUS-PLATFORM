@@ -20,7 +20,9 @@ import (
 	"github.com/10kk/agent/internal/docker"
 	agentfs "github.com/10kk/agent/internal/fs"
 	"github.com/10kk/agent/internal/metrics"
+	agentml "github.com/10kk/agent/internal/ml"
 	"github.com/10kk/agent/internal/policy"
+	agentrmm "github.com/10kk/agent/internal/rmm"
 	"github.com/10kk/agent/internal/telemetry"
 	"github.com/10kk/agent/internal/updater"
 	agentvm "github.com/10kk/agent/internal/vm"
@@ -102,6 +104,18 @@ type inboundMsg struct {
 	NtpEpochMs   int64 `json:"ntpEpochMs,omitempty"`  // UTC ms — coordinated start time
 	DurationSecs int   `json:"durationSecs,omitempty"`
 	JitterMaxMs  int   `json:"jitterMaxMs,omitempty"`
+
+	// ── Sprint 18.1 — RMM/EDR ─────────────────────────────────────────────────
+	PID int `json:"pid,omitempty"` // process ID for kill/inspect
+
+	// ── Sprint 18.3 — Dual-Mesh ───────────────────────────────────────────────
+	LANMeshIP  string `json:"lanMeshIp,omitempty"`  // 10.60.0.x
+	WANMeshIP  string `json:"wanMeshIp,omitempty"`  // 10.70.0.x
+	TenantMode string `json:"tenantMode,omitempty"` // "PUBLIC" | "PRIVATE"
+
+	// ── Sprint 20.3 — CRIU Live Migration ─────────────────────────────────────
+	DumpPath   string `json:"dumpPath,omitempty"`   // path to CRIU dump dir
+	TargetAddr string `json:"targetAddr,omitempty"` // destination node mesh IP
 }
 
 // RunConnectionLoop dials the master and re-dials on any disconnect.
@@ -767,6 +781,102 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 			agentvm.StopGatewayVM()
 		}()
 
+	// ── Sprint 18.3: Dual-Mesh (nexus-lan + nexus-wan) ──────────────────────────
+	case "setup_dual_mesh":
+		go func() {
+			cfg := DualMeshConfig{
+				LANMeshIP:  msg.LANMeshIP,
+				WANMeshIP:  msg.WANMeshIP,
+				TenantMode: msg.TenantMode,
+			}
+			if err := SetupDualMesh(cfg); err != nil {
+				log.Printf("[dual_mesh] setup error: %v", err)
+			}
+		}()
+
+	case "teardown_dual_mesh":
+		go func() { TeardownDualMesh() }()
+
+	// ── Sprint 20.3: CRIU Live Migration ─────────────────────────────────────────
+	case "criu_checkpoint":
+		go func() {
+			if msg.AppSlug == "" || msg.DumpPath == "" {
+				log.Printf("[criu] checkpoint: missing appSlug or dumpPath")
+				return
+			}
+			if err := agentvm.CRIUCheckpoint(ctx, msg.AppSlug, msg.DumpPath); err != nil {
+				log.Printf("[criu] checkpoint error: %v", err)
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_checkpoint_result",
+					"requestId": msg.RequestID,
+					"success":   false,
+					"error":     err.Error(),
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			} else {
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_checkpoint_result",
+					"requestId": msg.RequestID,
+					"success":   true,
+					"dumpPath":  msg.DumpPath,
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			}
+		}()
+
+	case "criu_restore":
+		go func() {
+			if msg.DumpPath == "" {
+				log.Printf("[criu] restore: missing dumpPath")
+				return
+			}
+			if err := agentvm.CRIURestore(ctx, msg.DumpPath); err != nil {
+				log.Printf("[criu] restore error: %v", err)
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_restore_result",
+					"requestId": msg.RequestID,
+					"success":   false,
+					"error":     err.Error(),
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			} else {
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_restore_result",
+					"requestId": msg.RequestID,
+					"success":   true,
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			}
+		}()
+
+	// ── Sprint 20.3: CRIU Dump Transfer ─────────────────────────────────────────
+	case "criu_transfer":
+		go func() {
+			if msg.DumpPath == "" || msg.TargetAddr == "" {
+				log.Printf("[criu] transfer: missing dumpPath or targetAddr")
+				return
+			}
+			if err := agentvm.TransferDump(ctx, msg.DumpPath, msg.TargetAddr, "nexus"); err != nil {
+				log.Printf("[criu] transfer error: %v", err)
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_transfer_result",
+					"requestId": msg.RequestID,
+					"success":   false,
+					"error":     err.Error(),
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			} else {
+				b, _ := json.Marshal(map[string]any{
+					"type":      "criu_transfer_result",
+					"requestId": msg.RequestID,
+					"success":   true,
+					"dumpPath":  msg.DumpPath,
+					"targetAddr": msg.TargetAddr,
+				})
+				select { case out <- b: case <-ctx.Done(): }
+			}
+		}()
+
 	// ── WireGuard mesh setup (Sprint 12.1) ────────────────────────────────────
 	case "setup_mesh":
 		go func() {
@@ -877,6 +987,22 @@ func handleCommand(ctx context.Context, msg inboundMsg, out chan<- []byte) {
 					log.Printf("[collective] stop error: %v", err)
 				}
 			}
+		}()
+
+	// ── Sprint 18.1: RMM / EDR ───────────────────────────────────────────────────
+	case "rmm_list_processes":
+		agentrmm.HandleRMMListProcesses(msg.RequestID, out, ctx)
+
+	case "rmm_kill_process":
+		agentrmm.HandleRMMKillProcess(msg.RequestID, int32(msg.PID), out, ctx)
+
+	case "rmm_scan_connections":
+		agentrmm.HandleRMMScanConnections(msg.RequestID, out, ctx)
+
+	// ── Sprint 21.1: Edge Training — federated gradient upload ───────────────────
+	case "run_edge_training":
+		go func() {
+			agentml.RunEdgeTraining(ctx, out)
 		}()
 
 	// ── Sprint 17.4: Hybrid Benchmark Engine ─────────────────────────────────────

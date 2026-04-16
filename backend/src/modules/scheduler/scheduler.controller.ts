@@ -4,6 +4,8 @@ import { classifyRuntime } from '../../services/classifier.service';
 import { sendWorkloadToNodes } from '../../services/workload-dispatch.service';
 import prisma from '../../config/database';
 import { getRedisClient } from '../../config/redis';
+import { parseComposeYaml, planNodeAssignments } from '../../services/compose-parser.service';
+import { getAgentSocket } from '../../services/agent-ws.service';
 
 // ── GET /api/v1/scheduler/nodes ───────────────────────────────────────────────
 /**
@@ -281,6 +283,129 @@ export async function getAppNetTelemetry(req: Request<{ id: string }>, res: Resp
     }
 
     res.json({ status: 'success', data: { appId: app.id, appName: app.name, nodes: nodeList, edges } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── POST /api/v1/scheduler/deploy-compose ────────────────────────────────────
+/**
+ * Sprint 18.2 — Docker Compose deploy.
+ *
+ * Accepts a raw docker-compose.yml string in `req.body.composeYaml` plus an
+ * optional `stackName`. Parses the file, assigns each service to the best
+ * available node, creates DB records, and dispatches `deploy_compose_service`
+ * commands to each agent.
+ *
+ * Body: { composeYaml: string, stackName?: string }
+ */
+export async function deployCompose(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { composeYaml, stackName = 'nexus' } = req.body as {
+      composeYaml: string;
+      stackName?:  string;
+    };
+
+    if (!composeYaml || typeof composeYaml !== 'string') {
+      res.status(400).json({ status: 'error', message: '"composeYaml" is required.' });
+      return;
+    }
+
+    // 1. Parse compose file → DeployPlan
+    const plan = parseComposeYaml(composeYaml, stackName);
+    if (plan.services.length === 0) {
+      res.status(422).json({ status: 'error', message: 'No services found in compose file.', warnings: plan.warnings });
+      return;
+    }
+
+    // 2. Load available nodes for placement
+    const rawNodes = await prisma.node.findMany({
+      where:  { status: 'ONLINE' },
+      select: { id: true, infraType: true, status: true, cpuCores: true, ramMb: true, gpuCount: true },
+    });
+
+    const nodeData = rawNodes.map((n) => ({
+      id:        n.id,
+      infraType: n.infraType ?? 'STANDARD',
+      status:    n.status,
+      cpuCores:  n.cpuCores ?? 2,
+      ramMb:     n.ramMb    ?? 2048,
+      gpuCount:  n.gpuCount ?? 0,
+    }));
+
+    if (nodeData.length === 0) {
+      res.status(503).json({ status: 'error', message: 'No online nodes available for deployment.' });
+      return;
+    }
+
+    // 3. Assign services to nodes
+    const assignments = planNodeAssignments(plan, nodeData);
+
+    // 4. Create a DePINApp record for the whole stack
+    const app = await (prisma.dePINApp as any).create({
+      data: {
+        name:          stackName,
+        slug:          `${stackName}-compose-${Date.now()}`,
+        executionMode: 'MICROVM',
+        status:        'DEPLOYING',
+        userId:        req.user!.id,
+      },
+    });
+
+    // 5. Create NodeAssignment records + dispatch to agents
+    const dispatched: Array<{ service: string; nodeId: string; status: string }> = [];
+
+    for (const { service, nodeId } of assignments) {
+      // DB record
+      await prisma.nodeAssignment.create({
+        data: {
+          appId:  app.id,
+          nodeId,
+          role:   service.role === 'api' || service.role === 'frontend' ? 'LEADER' : 'FOLLOWER',
+          status: 'RUNNING',
+        },
+      });
+
+      // Dispatch to agent
+      const { WebSocket } = await import('ws');
+      const ws = getAgentSocket(nodeId);
+      if (ws && (ws as any).readyState === WebSocket.OPEN) {
+        (ws as any).send(JSON.stringify({
+          type:         'deploy_compose_service',
+          appId:        app.id,
+          stackName,
+          serviceName:  service.name,
+          role:         service.role,
+          image:        service.image ?? null,
+          build:        service.build ?? null,
+          ports:        service.ports,
+          envVars:      { ...service.envVars },
+          depends:      service.depends,
+          volumes:      service.volumes,
+          networks:     service.networks,
+          replicas:     service.replicas,
+          cpuLimit:     service.cpuLimit  ?? null,
+          memLimit:     service.memLimit  ?? null,
+          gatewayRoute: service.gatewayRoute ?? null,
+        }));
+        dispatched.push({ service: service.name, nodeId, status: 'dispatched' });
+      } else {
+        dispatched.push({ service: service.name, nodeId, status: 'agent_offline' });
+      }
+    }
+
+    // 6. Notify frontend
+    const io = req.app.get('io');
+    io?.emit('compose:deployed', { appId: app.id, stackName, services: dispatched.length });
+
+    res.status(201).json({
+      status: 'success',
+      data: {
+        app,
+        plan:       { totalServices: plan.totalServices, networkName: plan.networkName, warnings: plan.warnings },
+        dispatched,
+      },
+    });
   } catch (err) {
     next(err);
   }

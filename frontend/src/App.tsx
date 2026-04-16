@@ -10,7 +10,6 @@ import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import DashboardPage from './pages/DashboardPage';
 import ProjectPage from './pages/ProjectPage';
-import AdminUsersPage from './pages/AdminUsersPage';
 import SettingsPage from './pages/SettingsPage';
 import GatewayPage from './pages/GatewayPage';
 import CloudPage from './pages/CloudPage';
@@ -24,7 +23,7 @@ import BillingPage from './pages/BillingPage';
 import ProviderPage from './pages/ProviderPage';
 import SonarRadarPage from './pages/SonarRadarPage';
 import SentinelPage from './pages/SentinelPage';
-import AdminHubPage from './pages/AdminHubPage';
+import GlobalAdminPage from './pages/GlobalAdminPage';
 
 // Redireciona para o hub certo baseado no role do usuário logado
 function RootRedirect() {
@@ -44,14 +43,16 @@ function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password"  element={<ResetPasswordPage />} />
 
-          {/* ── Admin Hub (ADM only) ───────────────────────────────────── */}
+          {/* ── Admin Global (ADM only) ───────────────────────────────── */}
           <Route path="/admin" element={
             <ProtectedRoute>
               <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                <AppLayout><AdminHubPage /></AppLayout>
+                <AppLayout><GlobalAdminPage /></AppLayout>
               </RoleGuard>
             </ProtectedRoute>
           } />
+          {/* /admin/users agora é aba dentro do hub — redirecionar */}
+          <Route path="/admin/users" element={<Navigate to="/admin" replace />} />
 
           {/* ── Protected — CI/CD ──────────────────────────────────────── */}
           <Route path="/dashboard" element={
@@ -106,13 +107,6 @@ function App() {
             <ProtectedRoute>
               <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
                 <AppLayout><ServerDetailsPage /></AppLayout>
-              </RoleGuard>
-            </ProtectedRoute>
-          } />
-          <Route path="/admin/users" element={
-            <ProtectedRoute>
-              <RoleGuard allowedRoles={['ADM']} fallback={<Navigate to="/dashboard" replace />}>
-                <AppLayout><AdminUsersPage /></AppLayout>
               </RoleGuard>
             </ProtectedRoute>
           } />

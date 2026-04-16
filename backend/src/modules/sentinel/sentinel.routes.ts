@@ -36,4 +36,31 @@ router.post( '/stress-test',            ...guard, ctrl.globalStressTest);
 // Sprint 17.3 — Backend log stream (recent errors)
 router.get(  '/logs',                   ...guard, ctrl.getRecentLogs);
 
+// Invite codes
+router.get(   '/invite-codes',          ...guard, ctrl.listInviteCodes);
+router.post(  '/invite-codes',          ...guard, ctrl.createInviteCode);
+router.delete('/invite-codes/:id',      ...guard, ctrl.revokeInviteCode);
+
+// Tenant suspend (distinct from ban)
+router.post('/tenants/:id/suspend',     ...guard, ctrl.suspendTenant);
+
+// Mesh connectivity test (ping all online nodes)
+router.post('/mesh-test',               ...guard, ctrl.meshConnectivityTest);
+
+// Sprint 18.1 — RMM / EDR
+router.get( '/rmm/nodes/:id/processes',         ...guard, ctrl.rmmListProcesses);
+router.delete('/rmm/nodes/:id/processes/:pid',  ...guard, ctrl.rmmKillProcess);
+router.get( '/rmm/nodes/:id/connections',       ...guard, ctrl.rmmScanConnections);
+
+// Sprint 18.3 — Dual-Mesh provisioning
+router.post('/nodes/:id/dual-mesh',             ...guard, ctrl.setupDualMesh);
+
+// Sprint 20.3 — Live Migration (CRIU)
+router.post('/migrate',                         ...guard, ctrl.liveMigrate);
+
+// Sprint 21.2 — Federated Learning: gradient ingestion + model broadcast
+router.post('/ml/gradients',                    authenticate, ctrl.ingestGradient); // agents call this (no ADM required)
+router.get( '/ml/model',                        authenticate, ctrl.getGlobalModel); // agents pull the model
+router.post('/ml/aggregate',                    ...guard, ctrl.triggerFedAvg);      // ADM triggers manual aggregation
+
 export default router;
