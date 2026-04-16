@@ -1011,7 +1011,7 @@ function AuditTab() {
         <EmptyState icon={Eye} title="Nenhuma entrada encontrada" desc="Sem registros para este filtro." />
       ) : (
         <div className="rounded-xl border border-border bg-bg-card overflow-hidden">
-          {filtered.map((entry, i) => {
+          {filtered.map((entry) => {
             const cfg = auditActionCfg[entry.action];
             const isExpanded = expanded === entry.id;
             return (
@@ -1085,7 +1085,7 @@ function EmptyState({ icon: Icon, title, desc }: { icon: React.ElementType; titl
 
 function CreateTenantModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [name, setName] = useState('');
-  const [document, setDocument] = useState('');
+  const [cnpj, setCnpj] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -1094,7 +1094,7 @@ function CreateTenantModal({ onClose, onSuccess }: { onClose: () => void; onSucc
     setLoading(true);
     setError('');
     try {
-      await api.post('/v1/admin/tenants', { name, document: document || undefined });
+      await api.post('/v1/admin/tenants', { name, document: cnpj || undefined });
       onSuccess();
     } catch (err: any) {
       setError(err.response?.data?.message || 'Falha ao criar tenant');
@@ -1134,7 +1134,7 @@ function CreateTenantModal({ onClose, onSuccess }: { onClose: () => void; onSucc
           </div>
           <div>
             <label className="block text-[11px] font-semibold text-text-secondary uppercase tracking-wider mb-1.5">CNPJ / CPF (opcional)</label>
-            <input value={document} onChange={e => setDocument(e.target.value)} className={inputClass} placeholder="00.000.000/0001-00" />
+            <input value={cnpj} onChange={e => setCnpj(e.target.value)} className={inputClass} placeholder="00.000.000/0001-00" />
           </div>
           <div className="flex gap-3 pt-2 border-t border-border">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-border text-text-primary text-[13px] font-semibold hover:bg-bg-card-hover transition-colors">
