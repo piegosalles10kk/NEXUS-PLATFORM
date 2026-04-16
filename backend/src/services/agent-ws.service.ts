@@ -597,7 +597,7 @@ export async function startAgentWsServer(io: SocketServer): Promise<void> {
             getRedisClient().then(r => r.set(
               `node:${nodeId}:peer_latencies`,
               JSON.stringify({ ts: Date.now(), peers: peerLatencies }),
-              'EX', 3600,
+              { EX: 3600 },
             )).catch(() => {});
           }
 

@@ -237,7 +237,7 @@ export async function getAppNetTelemetry(req: Request<{ id: string }>, res: Resp
       return;
     }
 
-    const nodeList = (app.assignments ?? []).map((a: any) => ({
+    const nodeList: Array<{ id: string; alias: string; status: string }> = (app.assignments ?? []).map((a: any) => ({
       id:     a.nodeId as string,
       alias:  starAlias(a.nodeId),
       status: a.status as string,
